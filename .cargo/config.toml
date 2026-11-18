@@ -1,0 +1,8 @@
+# MinGW lives at a path without spaces: gcc's linker can't cope with the
+# space in "C:\Users\! Jimi".
+[target.x86_64-pc-windows-gnu]
+linker = "C:/Users/Public/mingw64/bin/x86_64-w64-mingw32-gcc.exe"
+
+[env]
+CC_x86_64_pc_windows_gnu = "C:/Users/Public/mingw64/bin/x86_64-w64-mingw32-gcc.exe"
+AR_x86_64_pc_windows_gnu = "C:/Users/Public/mingw64/bin/ar.exe"

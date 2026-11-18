@@ -1,0 +1,3 @@
+/target
+# contains the dashboard's private SSH key — never commit this
+/data
