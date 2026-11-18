@@ -185,17 +185,34 @@ fn ensure_key(dir: &Path) -> Result<(PathBuf, String), String> {
         }
         let ok = cmd.status().map(|s| s.success()).unwrap_or(false);
         if !ok {
-            return Err("Couldn't run ssh-keygen. Install the Windows OpenSSH client \
-                        (Settings → System → Optional features) and restart the app."
-                .into());
+            let hint = if cfg!(windows) {
+                "Install the Windows OpenSSH client (Settings → System → Optional features)"
+            } else {
+                "Install the OpenSSH client (e.g. `sudo apt install openssh-client`)"
+            };
+            return Err(format!("Couldn't run ssh-keygen. {hint} and restart the app."));
         }
     }
     let pubkey = std::fs::read_to_string(key.with_extension("pub")).map_err(|e| e.to_string())?;
     Ok((key, pubkey))
 }
 
+/// Per-user settings folder: %APPDATA% on Windows, ~/Library/Application Support
+/// on macOS, $XDG_CONFIG_HOME or ~/.config on Linux.
+fn config_base() -> PathBuf {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = || var("HOME").unwrap_or_else(|| PathBuf::from("."));
+    if cfg!(windows) {
+        var("APPDATA").unwrap_or_else(|| PathBuf::from("."))
+    } else if cfg!(target_os = "macos") {
+        home().join("Library/Application Support")
+    } else {
+        var("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config"))
+    }
+}
+
 fn start(ctx: &egui::Context) -> Result<Arc<Shared>, String> {
-    let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let base = config_base();
     let dir = base.join("homelab");
     // One-time move from the app's old name, keeping your Pis and SSH key.
     let old = base.join("pi-dashboard");
@@ -939,11 +956,15 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Home Lab")
+        .with_inner_size([1120.0, 760.0])
+        .with_min_inner_size([420.0, 360.0]);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Home Lab")
-            .with_inner_size([1120.0, 760.0])
-            .with_min_inner_size([420.0, 360.0]),
+        viewport,
         // Skip MSAA/depth/stencil buffers we don't need: faster window creation.
         multisampling: 0,
         depth_buffer: 0,

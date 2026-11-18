@@ -6,3 +6,4 @@ linker = "C:/Users/Public/mingw64/bin/x86_64-w64-mingw32-gcc.exe"
 [env]
 CC_x86_64_pc_windows_gnu = "C:/Users/Public/mingw64/bin/x86_64-w64-mingw32-gcc.exe"
 AR_x86_64_pc_windows_gnu = "C:/Users/Public/mingw64/bin/ar.exe"
+RC_x86_64_pc_windows_gnu = "C:/Users/Public/mingw64/bin/windres.exe"
