@@ -455,6 +455,25 @@ struct App {
     confirm_action: Option<(u64, Action)>,
     /// Typed in the confirm step, handed to the action, then cleared. Never saved.
     sudo_password: String,
+    /// Last seen state per Pi, to notice changes (online → offline, …).
+    prev_state: HashMap<u64, State>,
+    /// Pis currently flagged as too hot (cleared once they cool down).
+    hot: HashSet<u64>,
+    alerts: Vec<Alert>,
+}
+
+struct Alert {
+    text: String,
+    icon: &'static str,
+    color: egui::Color32,
+    at: u64,
+}
+
+/// Alert when the CPU reaches this temperature (override with the HOMELAB_HOT_C
+/// environment variable); the alert re-arms 5 °C below it.
+fn hot_threshold() -> f32 {
+    static T: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *T.get_or_init(|| std::env::var("HOMELAB_HOT_C").ok().and_then(|v| v.parse().ok()).unwrap_or(75.0))
 }
 
 impl App {
@@ -469,6 +488,44 @@ impl App {
             diag_open: None,
             confirm_action: None,
             sudo_password: String::new(),
+            prev_state: HashMap::new(),
+            hot: HashSet::new(),
+            alerts: Vec::new(),
+        }
+    }
+
+    fn alert(&mut self, ctx: &egui::Context, text: String, icon: &'static str, color: egui::Color32) {
+        self.alerts.push(Alert { text, icon, color, at: now() });
+        if self.alerts.len() > 5 {
+            self.alerts.remove(0);
+        }
+        // Flash the taskbar / dock icon if the window isn't focused.
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+    }
+
+    /// Turns state changes into alerts: offline, back online, too hot.
+    fn check_alerts(&mut self, ctx: &egui::Context, pis: &[Pi], status: &HashMap<u64, Status>) {
+        for pi in pis {
+            let Some(s) = status.get(&pi.id) else { continue };
+            let prev = self.prev_state.insert(pi.id, s.state.clone());
+            match (prev, &s.state) {
+                (Some(State::Online), State::Offline) => {
+                    self.alert(ctx, format!("{} went offline", pi.name), icon::PLUG, RED);
+                }
+                (Some(State::Offline), State::Online) => {
+                    self.alert(ctx, format!("{} is back online", pi.name), icon::LIST_CHECK, GREEN);
+                }
+                _ => {}
+            }
+            if s.state == State::Online {
+                if let Some(t) = s.temp_history.back().copied() {
+                    if t >= hot_threshold() && self.hot.insert(pi.id) {
+                        self.alert(ctx, format!("{} is running hot: {t:.1} °C", pi.name), icon::TEMP, AMBER);
+                    } else if t < hot_threshold() - 5.0 {
+                        self.hot.remove(&pi.id);
+                    }
+                }
+            }
         }
     }
 
@@ -1224,6 +1281,7 @@ impl eframe::App for App {
             let d = shared.data.lock().unwrap();
             (d.pis.clone(), d.status.clone())
         };
+        self.check_alerts(ctx, &pis, &status);
 
         // ── Top bar ──
         egui::TopBottomPanel::top("top")
@@ -1258,6 +1316,25 @@ impl eframe::App for App {
                         }
                     });
                 });
+
+                // Alerts (newest first), each dismissible.
+                let mut dismiss = None;
+                for (i, a) in self.alerts.iter().enumerate().rev() {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let w = ui.available_width() - 40.0;
+                        ui.allocate_ui(egui::vec2(w, 0.0), |ui| {
+                            let ago = fmt_duration(now().saturating_sub(a.at));
+                            ui::notice(ui, Some(a.icon), &format!("{}  ·  {ago} ago", a.text), a.color);
+                        });
+                        if ui::icon_button(ui, icon::XMARK, "Dismiss").clicked() {
+                            dismiss = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = dismiss {
+                    self.alerts.remove(i);
+                }
             });
 
         // ── Add dialog ──

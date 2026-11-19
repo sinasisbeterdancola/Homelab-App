@@ -55,6 +55,10 @@ Your list of Pis (`pis.json`), the last known stats (`cache.json`) and the app's
 - macOS: `~/Library/Application Support/homelab`
 - Linux: `~/.config/homelab`
 
+## Alerts
+
+The app shows a banner (and flashes its taskbar icon) when a Pi goes offline, comes back online, or its CPU reaches 75 °C. To change the temperature limit, set the `HOMELAB_HOT_C` environment variable, e.g. `HOMELAB_HOT_C=70`.
+
 ## Good to know
 
 - The Pi's host key is accepted without checking. That's fine on a trusted home network.
