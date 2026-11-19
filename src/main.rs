@@ -7,7 +7,7 @@ mod ui;
 use eframe::egui::{self, Align, Frame, Layout, Margin, RichText, Stroke};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
@@ -47,7 +47,12 @@ struct Status {
     error: Option<String>,
     stats: HashMap<String, String>,
     log: String,
+    /// CPU temperature (°C) of the last polls, oldest first.
+    temp_history: VecDeque<f32>,
 }
+
+/// 10 minutes at one poll every 10 s.
+const HISTORY_LEN: usize = 60;
 
 type Kv = HashMap<String, String>;
 
@@ -244,6 +249,12 @@ impl Shared {
                     s.state = State::Online;
                     s.last_seen = Some(now());
                     s.error = None;
+                    if let Some(t) = stats.get("temp").and_then(|t| t.parse::<f32>().ok()) {
+                        s.temp_history.push_back(t / 1000.0);
+                        if s.temp_history.len() > HISTORY_LEN {
+                            s.temp_history.pop_front();
+                        }
+                    }
                     s.stats = stats;
                 }
                 Err(err) => {
@@ -877,7 +888,13 @@ impl App {
 
                 // Body
                 match s.state {
-                    State::Online => metrics(ui, &s.stats),
+                    State::Online => {
+                        metrics(ui, &s.stats);
+                        if s.temp_history.len() >= 2 {
+                            let latest = *s.temp_history.back().unwrap() as f64;
+                            ui::sparkline(ui, "CPU temp · last 10 min", &s.temp_history, HISTORY_LEN, "°C", level(latest, 60.0, 75.0));
+                        }
+                    }
                     State::SettingUp => {
                         ui::notice(ui, None, "Connecting and running the install script…", AMBER);
                     }
