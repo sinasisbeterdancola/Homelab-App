@@ -237,10 +237,21 @@ fn start(ctx: &egui::Context) -> Result<Arc<Shared>, String> {
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     let (key, pubkey) = ensure_key(&dir)?;
-    let pis: Vec<Pi> = std::fs::read_to_string(dir.join("pis.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    let db = dir.join("pis.json");
+    let pis: Vec<Pi> = match std::fs::read_to_string(&db) {
+        Err(_) => Vec::new(), // first run
+        // Editors like Notepad may add a UTF-8 BOM; serde_json rejects it.
+        Ok(text) => serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| {
+            // Never start with an empty list here: the next save would wipe the user's Pis.
+            let backup = dir.join("pis.json.broken");
+            let _ = std::fs::copy(&db, &backup);
+            format!(
+                "Couldn't read {}: {e}. A copy was saved as {}. Fix or delete the file and restart the app.",
+                db.display(),
+                backup.display()
+            )
+        })?,
+    };
 
     let shared = Arc::new(Shared {
         data: Mutex::new(Data { pis, ..Default::default() }),

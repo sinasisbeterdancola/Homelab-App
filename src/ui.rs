@@ -283,7 +283,7 @@ pub fn notice(ui: &mut Ui, icon: Option<&str>, text: &str, color: Color32) {
         .inner_margin(Margin::symmetric(12.0, 10.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
                 match icon {
                     Some(i) => {
                         ui.label(RichText::new(i).color(color));
@@ -292,7 +292,8 @@ pub fn notice(ui: &mut Ui, icon: Option<&str>, text: &str, color: Color32) {
                         ui.add(egui::Spinner::new().size(14.0).color(color));
                     }
                 }
-                ui.label(RichText::new(text).color(TEXT));
+                // Long messages (errors with paths) wrap instead of running off-screen.
+                ui.add(egui::Label::new(RichText::new(text).color(TEXT)).wrap());
             });
         });
 }
