@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eframe = "0.29"
+# persistence: remembers window size and position between runs
+eframe = { version = "0.29", features = ["persistence"] }
 # ring instead of the default aws-lc-rs: no cmake/nasm needed to build
 russh = { version = "0.65.2", default-features = false, features = ["ring", "rsa", "flate2"] }
 serde = { version = "1", features = ["derive"] }

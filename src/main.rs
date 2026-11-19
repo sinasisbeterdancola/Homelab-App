@@ -1792,6 +1792,8 @@ fn main() -> eframe::Result {
         depth_buffer: 0,
         stencil_buffer: 0,
         vsync: true,
+        // Reopen at the size and position the window had when it was closed.
+        persist_window: true,
         ..Default::default()
     };
     eframe::run_native("Home Lab", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
