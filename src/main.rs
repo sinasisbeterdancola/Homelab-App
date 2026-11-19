@@ -1034,9 +1034,18 @@ impl App {
                                 let ctx = ui.ctx().clone();
                                 self.open_diag(shared, &ctx, pi);
                             }
+                            if pi.host_key.is_some()
+                                && s.state != State::SettingUp
+                                && ui::icon_button(ui, icon::TERMINAL, "Open SSH terminal").clicked()
+                            {
+                                if let Err(err) = open_terminal(&shared.key, pi) {
+                                    let ctx = ui.ctx().clone();
+                                    self.alert(&ctx, err, icon::WARN, RED);
+                                }
+                            }
                             if !s.log.is_empty() {
                                 let tip = if log_open { "Hide setup log" } else { "Show setup log" };
-                                if ui::icon_button(ui, icon::TERMINAL, tip).clicked() {
+                                if ui::icon_button(ui, icon::FILE, tip).clicked() {
                                     if log_open {
                                         self.open_logs.remove(&pi.id);
                                     } else {
@@ -1089,6 +1098,56 @@ fn metrics(ui: &mut egui::Ui, st: &HashMap<String, String>) {
         ui.add_space(10.0);
         ui.label(RichText::new(format!("{}  {}", icon::CHIP, info.join("  ·  "))).small().color(MUTED));
     }
+}
+
+/// Opens an interactive SSH session to the Pi in a new terminal window, logging
+/// in with the app's key.
+fn open_terminal(key: &Path, pi: &Pi) -> Result<(), String> {
+    use std::process::Command;
+    let target = format!("{}@{}", pi.user, pi.host);
+    let port = pi.port.to_string();
+    let ssh_args = |c: &mut Command| {
+        c.arg("-i").arg(key).args(["-p", &port, "-o", "StrictHostKeyChecking=accept-new", &target]);
+    };
+
+    #[cfg(windows)]
+    let result = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new("ssh");
+        ssh_args(&mut c);
+        c.creation_flags(0x0000_0010).spawn() // CREATE_NEW_CONSOLE
+    };
+
+    #[cfg(target_os = "macos")]
+    let result = {
+        let shell = format!("ssh -i '{}' -p {port} -o StrictHostKeyChecking=accept-new {target}", key.display());
+        let script = format!(
+            "tell application \"Terminal\"\n do script \"{}\"\n activate\nend tell",
+            shell.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+        Command::new("osascript").args(["-e", &script]).spawn()
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = {
+        // First terminal emulator that exists wins.
+        let mut last = Err(std::io::Error::other("no terminal emulator found"));
+        for (term, sep) in [("x-terminal-emulator", "-e"), ("gnome-terminal", "--"), ("konsole", "-e"), ("xterm", "-e")] {
+            let mut c = Command::new(term);
+            c.args([sep, "ssh"]);
+            ssh_args(&mut c);
+            last = c.spawn();
+            if last.is_ok() {
+                break;
+            }
+        }
+        last
+    };
+
+    #[cfg(target_os = "macos")]
+    let _ = ssh_args;
+
+    result.map(|_| ()).map_err(|e| format!("Couldn't open a terminal: {e}"))
 }
 
 /// Collapsible command output (last lines matter most, so it sticks to the bottom).
