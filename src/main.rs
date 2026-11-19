@@ -530,6 +530,10 @@ struct App {
     settings_draft: Option<Settings>,
     /// Pis whose card shows the load graph instead of the temperature graph.
     graph: HashMap<u64, Graph>,
+    /// Text box for pasting a Pi list (None = closed).
+    import_text: Option<String>,
+    /// Result of the last copy/import, shown in the settings window.
+    transfer_msg: Option<(String, egui::Color32)>,
 }
 
 struct Alert {
@@ -558,6 +562,8 @@ impl App {
             settings: Settings::default(),
             settings_draft: None,
             graph: HashMap::new(),
+            import_text: None,
+            transfer_msg: None,
         }
     }
 
@@ -819,6 +825,66 @@ impl App {
     }
 
     // ───────────────────────── add-Pi dialog ─────────────────────────
+
+    /// Copy the Pi list to the clipboard, or paste one in (e.g. from another PC).
+    fn transfer_ui(&mut self, ui: &mut egui::Ui, shared: &Arc<Shared>) {
+        ui.label(RichText::new(format!("{}  Pi list", icon::SERVER)).color(TEXT));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui::secondary_button(ui, "Copy to clipboard").clicked() {
+                let pis = shared.data.lock().unwrap().pis.clone();
+                let json = serde_json::to_string_pretty(&pis).unwrap_or_default();
+                ui.ctx().copy_text(json);
+                self.transfer_msg = Some((format!("Copied {} Pi(s).", pis.len()), GREEN));
+            }
+            if ui::secondary_button(ui, "Import…").clicked() {
+                self.import_text = Some(String::new());
+                self.transfer_msg = None;
+            }
+        });
+
+        if let Some(text) = &mut self.import_text {
+            ui.add_space(6.0);
+            ui.add(
+                egui::TextEdit::multiline(text)
+                    .code_editor()
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Paste a copied Pi list here (Ctrl+V)"),
+            );
+            ui.add_space(4.0);
+            let mut done = false;
+            ui.horizontal(|ui| {
+                if ui::primary_button(ui, "Add these Pis").clicked() {
+                    self.transfer_msg = Some(match import_pis(shared, text) {
+                        Ok(0) => ("Nothing new: all those Pis are already in your list.".into(), MUTED),
+                        Ok(n) => {
+                            let (s, c) = (shared.clone(), ui.ctx().clone());
+                            thread::spawn(move || s.poll_all(&c));
+                            done = true;
+                            (format!("Added {n} Pi(s)."), GREEN)
+                        }
+                        Err(e) => (format!("That doesn't look like a Pi list: {e}"), RED),
+                    });
+                }
+                if ui::secondary_button(ui, "Cancel").clicked() {
+                    done = true;
+                }
+            });
+            if done {
+                self.import_text = None;
+            }
+        }
+        if let Some((msg, color)) = &self.transfer_msg {
+            ui.add_space(4.0);
+            ui.label(RichText::new(msg).small().color(*color));
+        }
+        ui.label(
+            RichText::new("Imported Pis may need Edit → Run setup again on a new PC, because each PC has its own key.")
+                .small()
+                .color(MUTED),
+        );
+    }
 
     fn open_form(&mut self, mode: FormMode, pi: Option<&Pi>) {
         self.form = match pi {
@@ -1198,6 +1264,31 @@ fn metrics(ui: &mut egui::Ui, st: &HashMap<String, String>) {
     }
 }
 
+/// Adds Pis from a pasted list, skipping ones that are already there (same host,
+/// port and user). Returns how many were added.
+fn import_pis(shared: &Arc<Shared>, text: &str) -> Result<usize, String> {
+    let incoming: Vec<Pi> = serde_json::from_str(text.trim().trim_start_matches('\u{feff}')).map_err(|e| e.to_string())?;
+    let mut added = 0;
+    {
+        let mut d = shared.data.lock().unwrap();
+        let base = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        for mut pi in incoming {
+            let exists = d.pis.iter().any(|p| p.host == pi.host && p.port == pi.port && p.user == pi.user);
+            if exists || pi.host.trim().is_empty() {
+                continue;
+            }
+            pi.id = base + added as u64; // fresh, unique ids on this PC
+            d.status.insert(pi.id, Status::default());
+            d.pis.push(pi);
+            added += 1;
+        }
+    }
+    if added > 0 {
+        shared.save();
+    }
+    Ok(added)
+}
+
 /// Opens an interactive SSH session to the Pi in a new terminal window, logging
 /// in with the app's key.
 fn open_terminal(key: &Path, pi: &Pi) -> Result<(), String> {
@@ -1559,6 +1650,10 @@ impl eframe::App for App {
                     });
                     ui.add_space(6.0);
                     ui.label(RichText::new("Drag the numbers or double-click to type.").small().color(MUTED));
+                    ui.add_space(14.0);
+                    ui::divider(ui);
+                    ui.add_space(10.0);
+                    self.transfer_ui(ui, &shared);
                     ui.add_space(16.0);
                     // Inside `horizontal` so the right-to-left row doesn't stretch the window down.
                     ui.horizontal(|ui| {
