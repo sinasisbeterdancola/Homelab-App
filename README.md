@@ -49,7 +49,7 @@ cargo build --release
 
 ## Where data is stored
 
-Your list of Pis (`pis.json`) and the app's SSH key (`id_ed25519`) are stored in:
+Your list of Pis (`pis.json`), the last known stats (`cache.json`) and the app's SSH key (`id_ed25519`) are stored in:
 
 - Windows: `%APPDATA%\homelab`
 - macOS: `~/Library/Application Support/homelab`

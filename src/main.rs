@@ -51,6 +51,13 @@ struct Status {
 
 type Kv = HashMap<String, String>;
 
+/// One Pi's entry in cache.json.
+#[derive(Serialize, Deserialize)]
+struct CacheEntry {
+    last_seen: u64,
+    stats: Kv,
+}
+
 /// Results of the diagnostics window for one Pi.
 #[derive(Clone, Default)]
 struct Diag {
@@ -199,6 +206,23 @@ impl Shared {
         let _ = std::fs::write(self.dir.join("pis.json"), json);
     }
 
+    /// Last known stats per Pi, so the next start can show them instantly.
+    fn save_cache(&self) {
+        let cache: HashMap<u64, CacheEntry> = {
+            let d = self.data.lock().unwrap();
+            d.status
+                .iter()
+                .filter_map(|(id, s)| {
+                    let last_seen = s.last_seen?;
+                    Some((*id, CacheEntry { last_seen, stats: s.stats.clone() }))
+                })
+                .collect()
+        };
+        if let Ok(json) = serde_json::to_string(&cache) {
+            let _ = std::fs::write(self.dir.join("cache.json"), json);
+        }
+    }
+
     fn poll(&self, pi: &Pi) {
         let result = ssh::poll(&pi.host, pi.port, &pi.user, &self.key, pi.host_key.as_deref());
         let mut learned_key = false;
@@ -328,8 +352,19 @@ fn start(ctx: &egui::Context) -> Result<Arc<Shared>, String> {
         })?,
     };
 
+    // Show the last known stats right away; the first poll replaces them.
+    let cache: HashMap<u64, CacheEntry> = std::fs::read_to_string(dir.join("cache.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let status = cache
+        .into_iter()
+        .filter(|(id, _)| pis.iter().any(|p| p.id == *id))
+        .map(|(id, c)| (id, Status { last_seen: Some(c.last_seen), stats: c.stats, ..Default::default() }))
+        .collect();
+
     let shared = Arc::new(Shared {
-        data: Mutex::new(Data { pis, ..Default::default() }),
+        data: Mutex::new(Data { pis, status, ..Default::default() }),
         dir,
         key,
         pubkey,
@@ -338,6 +373,7 @@ fn start(ctx: &egui::Context) -> Result<Arc<Shared>, String> {
     let (poller, ctx) = (shared.clone(), ctx.clone());
     thread::spawn(move || loop {
         poller.poll_all(&ctx);
+        poller.save_cache();
         thread::sleep(POLL_EVERY);
     });
     Ok(shared)
@@ -842,6 +878,8 @@ impl App {
                     State::SettingUp => {
                         ui::notice(ui, None, "Connecting and running the install script…", AMBER);
                     }
+                    // Cached stats from the last run, while the first poll is in flight.
+                    State::Checking if !s.stats.is_empty() => metrics(ui, &s.stats),
                     State::Checking => {
                         ui::notice(ui, None, "Checking…", MUTED);
                     }
