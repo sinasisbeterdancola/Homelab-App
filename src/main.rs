@@ -225,11 +225,13 @@ struct Settings {
     hot_c: f32,
     /// Seconds between status checks.
     poll_secs: u64,
+    /// Light theme instead of dark.
+    light: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { hot_c: 75.0, poll_secs: 10 }
+        Self { hot_c: 75.0, poll_secs: 10, light: false }
     }
 }
 
@@ -583,17 +585,17 @@ impl App {
             let prev = self.prev_state.insert(pi.id, s.state.clone());
             match (prev, &s.state) {
                 (Some(State::Online), State::Offline) => {
-                    self.alert(ctx, format!("{} went offline", pi.name), icon::PLUG, RED);
+                    self.alert(ctx, format!("{} went offline", pi.name), icon::PLUG, RED());
                 }
                 (Some(State::Offline), State::Online) => {
-                    self.alert(ctx, format!("{} is back online", pi.name), icon::LIST_CHECK, GREEN);
+                    self.alert(ctx, format!("{} is back online", pi.name), icon::LIST_CHECK, GREEN());
                 }
                 _ => {}
             }
             if s.state == State::Online {
                 if let Some(t) = s.temp_history.back().copied() {
                     if t >= hot_c && self.hot.insert(pi.id) {
-                        self.alert(ctx, format!("{} is running hot: {t:.1} °C", pi.name), icon::TEMP, AMBER);
+                        self.alert(ctx, format!("{} is running hot: {t:.1} °C", pi.name), icon::TEMP, AMBER());
                     } else if t < hot_c - 5.0 {
                         self.hot.remove(&pi.id);
                     }
@@ -615,8 +617,8 @@ impl App {
     fn diag_ui(&mut self, ui: &mut egui::Ui, shared: &Arc<Shared>, pi: &Pi, g: &Diag) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(icon::STETHOSCOPE).size(18.0).color(ACCENT));
-            ui.label(RichText::new("Diagnostics").size(19.0).strong().color(TEXT));
-            ui.label(RichText::new(format!("·  {}", pi.name)).size(15.0).color(MUTED));
+            ui.label(RichText::new("Diagnostics").size(19.0).strong().color(TEXT()));
+            ui.label(RichText::new(format!("·  {}", pi.name)).size(15.0).color(MUTED()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui::icon_button(ui, icon::XMARK, "Close").clicked() {
                     self.diag_open = None;
@@ -648,9 +650,9 @@ impl App {
                 match (&g.speed, g.speed_running) {
                     (_, true) => ui::notice(ui, None, "Measuring LAN and internet speed… (up to ~40 s)", ACCENT),
                     (None, false) => {
-                        ui.label(RichText::new("Measures PC ↔ Pi over your network, and the Pi's own internet connection.").color(MUTED));
+                        ui.label(RichText::new("Measures PC ↔ Pi over your network, and the Pi's own internet connection.").color(MUTED()));
                     }
-                    (Some(Err(err)), false) => ui::notice(ui, Some(icon::WARN), err, RED),
+                    (Some(Err(err)), false) => ui::notice(ui, Some(icon::WARN), err, RED()),
                     (Some(Ok(m)), false) => speed_results(ui, m),
                 }
                 ui.add_space(8.0);
@@ -664,8 +666,8 @@ impl App {
             ui.add_space(16.0);
             match &g.checks {
                 Some(Ok(m)) => network_results(ui, m),
-                Some(Err(err)) => ui::notice(ui, Some(icon::WARN), err, RED),
-                None => ui::notice(ui, None, "Running checks…", MUTED),
+                Some(Err(err)) => ui::notice(ui, Some(icon::WARN), err, RED()),
+                None => ui::notice(ui, None, "Running checks…", MUTED()),
             }
     }
 
@@ -675,7 +677,7 @@ impl App {
             health_results(ui, m);
         } else if g.checks.is_none() {
             ui::section_title(ui, "Health");
-            ui::notice(ui, None, "Running checks…", MUTED);
+            ui::notice(ui, None, "Running checks…", MUTED());
         }
         ui.add_space(12.0);
         ui.horizontal(|ui| {
@@ -685,7 +687,7 @@ impl App {
                 }
             });
             if g.checks_running && g.checks.is_some() {
-                ui.add(egui::Spinner::new().size(14.0).color(MUTED));
+                ui.add(egui::Spinner::new().size(14.0).color(MUTED()));
             }
         });
 
@@ -699,7 +701,7 @@ impl App {
         ui::inset(ui, |ui| {
             match self.confirm_action {
                 Some((id, action)) if id == pi.id => {
-                    ui.label(RichText::new(action.confirm_text()).color(TEXT));
+                    ui.label(RichText::new(action.confirm_text()).color(TEXT()));
                     ui.add_space(6.0);
                     ui::field_label(ui, icon::LOCK, "Sudo password (leave empty if not needed, never saved)");
                     let pw = ui.add(ui::text_input(&mut self.sudo_password).password(true));
@@ -746,14 +748,14 @@ impl App {
                             Action::Reboot => "Reboot started. The Pi will come back online by itself.",
                             Action::Shutdown => "Shutdown started.",
                         };
-                        ui::notice(ui, Some(icon::LIST_CHECK), msg, GREEN);
+                        ui::notice(ui, Some(icon::LIST_CHECK), msg, GREEN());
                         action_log(ui, pi.id, out);
                     }
                     Ok((code, out)) => {
-                        ui::notice(ui, Some(icon::WARN), &format!("{} failed (exit code {code})", action.label()), RED);
+                        ui::notice(ui, Some(icon::WARN), &format!("{} failed (exit code {code})", action.label()), RED());
                         action_log(ui, pi.id, out);
                     }
-                    Err(err) => ui::notice(ui, Some(icon::WARN), err, RED),
+                    Err(err) => ui::notice(ui, Some(icon::WARN), err, RED()),
                 }
             }
         });
@@ -828,14 +830,14 @@ impl App {
 
     /// Copy the Pi list to the clipboard, or paste one in (e.g. from another PC).
     fn transfer_ui(&mut self, ui: &mut egui::Ui, shared: &Arc<Shared>) {
-        ui.label(RichText::new(format!("{}  Pi list", icon::SERVER)).color(TEXT));
+        ui.label(RichText::new(format!("{}  Pi list", icon::SERVER)).color(TEXT()));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui::secondary_button(ui, "Copy to clipboard").clicked() {
                 let pis = shared.data.lock().unwrap().pis.clone();
                 let json = serde_json::to_string_pretty(&pis).unwrap_or_default();
                 ui.ctx().copy_text(json);
-                self.transfer_msg = Some((format!("Copied {} Pi(s).", pis.len()), GREEN));
+                self.transfer_msg = Some((format!("Copied {} Pi(s).", pis.len()), GREEN()));
             }
             if ui::secondary_button(ui, "Import…").clicked() {
                 self.import_text = Some(String::new());
@@ -857,14 +859,14 @@ impl App {
             ui.horizontal(|ui| {
                 if ui::primary_button(ui, "Add these Pis").clicked() {
                     self.transfer_msg = Some(match import_pis(shared, text) {
-                        Ok(0) => ("Nothing new: all those Pis are already in your list.".into(), MUTED),
+                        Ok(0) => ("Nothing new: all those Pis are already in your list.".into(), MUTED()),
                         Ok(n) => {
                             let (s, c) = (shared.clone(), ui.ctx().clone());
                             thread::spawn(move || s.poll_all(&c));
                             done = true;
-                            (format!("Added {n} Pi(s)."), GREEN)
+                            (format!("Added {n} Pi(s)."), GREEN())
                         }
-                        Err(e) => (format!("That doesn't look like a Pi list: {e}"), RED),
+                        Err(e) => (format!("That doesn't look like a Pi list: {e}"), RED()),
                     });
                 }
                 if ui::secondary_button(ui, "Cancel").clicked() {
@@ -882,7 +884,7 @@ impl App {
         ui.label(
             RichText::new("Imported Pis may need Edit → Run setup again on a new PC, because each PC has its own key.")
                 .small()
-                .color(MUTED),
+                .color(MUTED()),
         );
     }
 
@@ -953,7 +955,7 @@ impl App {
         };
         ui.horizontal(|ui| {
             ui.label(RichText::new(icon::SERVER).size(18.0).color(ACCENT));
-            ui.label(RichText::new(title).size(19.0).strong().color(TEXT));
+            ui.label(RichText::new(title).size(19.0).strong().color(TEXT()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui::icon_button(ui, icon::XMARK, "Close").clicked() {
                     self.show_form = false;
@@ -961,7 +963,7 @@ impl App {
             });
         });
         ui.add_space(4.0);
-        ui.add(egui::Label::new(RichText::new(intro).color(MUTED)).wrap());
+        ui.add(egui::Label::new(RichText::new(intro).color(MUTED())).wrap());
         ui.add_space(14.0);
 
         ui::field_label(ui, icon::TAG, "Name");
@@ -1003,13 +1005,13 @@ impl App {
             ui.label(
                 RichText::new(format!("{}  Your password is only used for setup and is never saved.", icon::SHIELD))
                     .small()
-                    .color(MUTED),
+                    .color(MUTED()),
             );
         }
 
         if let Some(err) = &self.form.error {
             ui.add_space(6.0);
-            ui.label(RichText::new(format!("{}  {err}", icon::WARN)).color(RED));
+            ui.label(RichText::new(format!("{}  {err}", icon::WARN)).color(RED()));
         }
 
         ui.add_space(16.0);
@@ -1043,16 +1045,16 @@ impl App {
     /// Draws one Pi card and returns its response (used as a drop target).
     fn card(&mut self, ui: &mut egui::Ui, shared: &Arc<Shared>, pi: &Pi, s: &Status, width: f32) -> egui::Response {
         let (state_text, state_color) = match s.state {
-            State::Online => ("Online", GREEN),
-            State::Offline => ("Offline", RED),
-            State::SettingUp => ("Setting up", AMBER),
-            State::SetupFailed => ("Setup failed", RED),
-            State::Checking => ("Checking", MUTED),
+            State::Online => ("Online", GREEN()),
+            State::Offline => ("Offline", RED()),
+            State::SettingUp => ("Setting up", AMBER()),
+            State::SetupFailed => ("Setup failed", RED()),
+            State::Checking => ("Checking", MUTED()),
         };
 
         Frame::none()
-            .fill(CARD)
-            .stroke(Stroke::new(1.0_f32, LINE))
+            .fill(CARD())
+            .stroke(Stroke::new(1.0_f32, LINE()))
             .rounding(14.0)
             .inner_margin(Margin::same(CARD_PAD))
             .show(ui, |ui| {
@@ -1067,9 +1069,9 @@ impl App {
                     ui.add_space(4.0);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 1.0;
-                        ui.label(RichText::new(&pi.name).size(16.0).strong().color(TEXT));
+                        ui.label(RichText::new(&pi.name).size(16.0).strong().color(TEXT()));
                         let port = if pi.port == 22 { String::new() } else { format!(":{}", pi.port) };
-                        ui.label(RichText::new(format!("{}@{}{port}", pi.user, pi.host)).small().color(MUTED));
+                        ui.label(RichText::new(format!("{}@{}{port}", pi.user, pi.host)).small().color(MUTED()));
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui::pill(ui, state_text, state_color, s.state == State::SettingUp || s.state == State::Checking);
@@ -1103,7 +1105,7 @@ impl App {
                                         self.graph.insert(pi.id, g);
                                     }
                                 }
-                                ui.label(RichText::new(format!("· last {minutes} min")).small().color(MUTED));
+                                ui.label(RichText::new(format!("· last {minutes} min")).small().color(MUTED()));
                             });
                             let hot = self.settings.hot_c as f64;
                             let (values, unit, min_span, warn, bad) = match current {
@@ -1116,22 +1118,22 @@ impl App {
                         }
                     }
                     State::SettingUp => {
-                        ui::notice(ui, None, "Connecting and running the install script…", AMBER);
+                        ui::notice(ui, None, "Connecting and running the install script…", AMBER());
                     }
                     // Cached stats from the last run, while the first poll is in flight.
                     State::Checking if !s.stats.is_empty() => metrics(ui, &s.stats),
                     State::Checking => {
-                        ui::notice(ui, None, "Checking…", MUTED);
+                        ui::notice(ui, None, "Checking…", MUTED());
                     }
                     State::Offline => {
                         let msg = match s.last_seen {
                             Some(t) => format!("Unreachable · last seen {} ago", fmt_duration(now().saturating_sub(t))),
                             None => "Unreachable".into(),
                         };
-                        ui::notice(ui, Some(icon::PLUG), &msg, RED);
+                        ui::notice(ui, Some(icon::PLUG), &msg, RED());
                     }
                     State::SetupFailed => {
-                        ui::notice(ui, Some(icon::WARN), "Setup failed. Check the log below.", RED);
+                        ui::notice(ui, Some(icon::WARN), "Setup failed. Check the log below.", RED());
                         if ui::primary_button(ui, &format!("{}  Retry setup", icon::REFRESH)).clicked() {
                             self.open_form(FormMode::Setup, Some(pi));
                         }
@@ -1139,7 +1141,7 @@ impl App {
                 }
                 if let Some(err) = &s.error {
                     if s.state != State::Online {
-                        ui.label(RichText::new(err).small().color(MUTED));
+                        ui.label(RichText::new(err).small().color(MUTED()));
                     }
                 }
 
@@ -1147,14 +1149,14 @@ impl App {
                 let log_open = self.open_logs.contains(&pi.id);
                 if log_open && !s.log.is_empty() {
                     ui.add_space(4.0);
-                    Frame::none().fill(BG).rounding(8.0).inner_margin(Margin::same(10.0)).show(ui, |ui| {
+                    Frame::none().fill(BG()).rounding(8.0).inner_margin(Margin::same(10.0)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         egui::ScrollArea::vertical()
                             .id_salt(("log", pi.id))
                             .max_height(170.0)
                             .stick_to_bottom(true)
                             .show(ui, |ui| {
-                                ui.label(RichText::new(&s.log).monospace().size(11.5).color(MUTED));
+                                ui.label(RichText::new(&s.log).monospace().size(11.5).color(MUTED()));
                             });
                     });
                 }
@@ -1166,7 +1168,7 @@ impl App {
                 ui.horizontal(|ui| {
                     let up = s.stats.get("uptime").and_then(|u| u.parse::<f64>().ok());
                     if let (State::Online, Some(up)) = (&s.state, up) {
-                        ui.label(RichText::new(format!("{}  up {}", icon::CLOCK, fmt_duration(up as u64))).small().color(MUTED));
+                        ui.label(RichText::new(format!("{}  up {}", icon::CLOCK, fmt_duration(up as u64))).small().color(MUTED()));
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if self.confirm_remove == Some(pi.id) {
@@ -1203,7 +1205,7 @@ impl App {
                             {
                                 if let Err(err) = open_terminal(&shared.key, pi) {
                                     let ctx = ui.ctx().clone();
-                                    self.alert(&ctx, err, icon::WARN, RED);
+                                    self.alert(&ctx, err, icon::WARN, RED());
                                 }
                             }
                             if !s.log.is_empty() {
@@ -1240,7 +1242,7 @@ fn metrics(ui: &mut egui::Ui, st: &HashMap<String, String>) {
     ui.columns(2, |c| {
         match temp {
             Some(t) => ui::metric(&mut c[0], icon::TEMP, "CPU temp", &format!("{t:.1} °C"), t / 85.0, level(t, 60.0, 75.0)),
-            None => ui::metric(&mut c[0], icon::TEMP, "CPU temp", "—", 0.0, MUTED),
+            None => ui::metric(&mut c[0], icon::TEMP, "CPU temp", "—", 0.0, MUTED()),
         }
         let lf = load / cpus;
         ui::metric(&mut c[1], icon::GAUGE, "Load", &format!("{load:.2}  ·  {cpus} cores"), lf, level(lf * 100.0, 60.0, 85.0));
@@ -1260,7 +1262,7 @@ fn metrics(ui: &mut egui::Ui, st: &HashMap<String, String>) {
     let info: Vec<&str> = ["model", "os"].iter().filter_map(|k| st.get(*k)).map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
     if !info.is_empty() {
         ui.add_space(10.0);
-        ui.label(RichText::new(format!("{}  {}", icon::CHIP, info.join("  ·  "))).small().color(MUTED));
+        ui.label(RichText::new(format!("{}  {}", icon::CHIP, info.join("  ·  "))).small().color(MUTED()));
     }
 }
 
@@ -1344,7 +1346,7 @@ fn action_log(ui: &mut egui::Ui, id: u64, out: &str) {
     if out.trim().is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(RichText::new("Output").small().color(MUTED))
+    egui::CollapsingHeader::new(RichText::new("Output").small().color(MUTED()))
         .id_salt(("action_log", id))
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
@@ -1352,7 +1354,7 @@ fn action_log(ui: &mut egui::Ui, id: u64, out: &str) {
                 .max_height(160.0)
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
-                    ui.label(RichText::new(out.trim_end()).monospace().size(11.5).color(MUTED));
+                    ui.label(RichText::new(out.trim_end()).monospace().size(11.5).color(MUTED()));
                 });
         });
 }
@@ -1363,7 +1365,7 @@ fn speed_results(ui: &mut egui::Ui, m: &Kv) {
     let inet = |k: &str| get(k).filter(|v| *v > 0.0).map(|v| format!("{:.1}", v * 8.0 / 1e6)).unwrap_or("—".into());
     let lan = |k: &str| m.get(k).cloned().unwrap_or("—".into());
 
-    ui.label(RichText::new(format!("{}  PC ↔ Pi (your network)", icon::DESKTOP)).color(TEXT));
+    ui.label(RichText::new(format!("{}  PC ↔ Pi (your network)", icon::DESKTOP)).color(TEXT()));
     ui.add_space(4.0);
     ui.columns(2, |c| {
         ui::speed_tile(&mut c[0], icon::DOWNLOAD, "Pi → PC", &lan("lan_down"), "Mbps");
@@ -1372,10 +1374,10 @@ fn speed_results(ui: &mut egui::Ui, m: &Kv) {
     ui.add_space(12.0);
     ui::divider(ui);
     ui.add_space(10.0);
-    ui.label(RichText::new(format!("{}  Pi ↔ internet", icon::GLOBE)).color(TEXT));
+    ui.label(RichText::new(format!("{}  Pi ↔ internet", icon::GLOBE)).color(TEXT()));
     ui.add_space(4.0);
     if let Some(err) = m.get("inet_error") {
-        ui::notice(ui, Some(icon::WARN), err, AMBER);
+        ui::notice(ui, Some(icon::WARN), err, AMBER());
     } else {
         ui.columns(3, |c| {
             ui::speed_tile(&mut c[0], icon::DOWNLOAD, "Download", &inet("inet_down"), "Mbps");
@@ -1391,7 +1393,7 @@ fn network_results(ui: &mut egui::Ui, m: &Kv) {
     let f = |k: &str| s(k).parse::<f64>().ok();
     let ms = |v: Option<f64>, good: f64, ok: f64, missing: &str| match v {
         Some(v) => (format!("{v:.1} ms"), level(v, good, ok)),
-        None => (missing.to_string(), RED),
+        None => (missing.to_string(), RED()),
     };
 
     ui::section_title(ui, "Network");
@@ -1399,24 +1401,24 @@ fn network_results(ui: &mut egui::Ui, m: &Kv) {
         let (v, c) = ms(f("ssh_ms"), 120.0, 300.0, "—");
         ui::diag_row(ui, icon::DESKTOP, "SSH response from this PC", &v, c);
         let gw = s("gateway");
-        let (v, c) = if gw.is_empty() { ("no default route".into(), RED) } else { ms(f("gw_ping"), 10.0, 50.0, "no reply") };
+        let (v, c) = if gw.is_empty() { ("no default route".into(), RED()) } else { ms(f("gw_ping"), 10.0, 50.0, "no reply") };
         ui::diag_row(ui, icon::ROUTER, &format!("Router ping {}", if gw.is_empty() { "" } else { gw }), &v, c);
         let (v, c) = ms(f("net_ping"), 40.0, 100.0, "no internet");
         ui::diag_row(ui, icon::GLOBE, "Internet ping (1.1.1.1)", &v, c);
         let (v, c) = match s("dns_ms") {
-            "fail" | "" => ("failed".to_string(), RED),
+            "fail" | "" => ("failed".to_string(), RED()),
             d => ms(d.parse().ok(), 100.0, 500.0, "failed"),
         };
         ui::diag_row(ui, icon::SEARCH, "DNS lookup", &v, c);
         let (v, c) = match f("wifi") {
             Some(dbm) => (
                 format!("{dbm:.0} dBm"),
-                if dbm >= -60.0 { GREEN } else if dbm >= -70.0 { AMBER } else { RED },
+                if dbm >= -60.0 { GREEN() } else if dbm >= -70.0 { AMBER() } else { RED() },
             ),
-            None => ("wired / not in use".into(), MUTED),
+            None => ("wired / not in use".into(), MUTED()),
         };
         ui::diag_row(ui, icon::WIFI, "Wi-Fi signal", &v, c);
-        ui::diag_row(ui, icon::NETWORK, "IP address", s("ip"), MUTED);
+        ui::diag_row(ui, icon::NETWORK, "IP address", s("ip"), MUTED());
     });
 }
 
@@ -1429,61 +1431,61 @@ fn health_results(ui: &mut egui::Ui, m: &Kv) {
         let (v, c) = throttled(s("throttled"));
         ui::diag_row(ui, icon::BOLT, "Power & throttling", &v, c);
         let failed = s("failed");
-        let (v, c) = if failed.is_empty() { ("none".into(), GREEN) } else { (failed.replace(',', ", "), RED) };
+        let (v, c) = if failed.is_empty() { ("none".into(), GREEN()) } else { (failed.replace(',', ", "), RED()) };
         ui::diag_row(ui, icon::LIST_CHECK, "Failed services", &v, c);
         let (v, c) = match f("updates") {
-            Some(0.0) => ("up to date".into(), GREEN),
-            Some(n) => (format!("{n:.0} pending"), AMBER),
-            None => ("—".into(), MUTED),
+            Some(0.0) => ("up to date".into(), GREEN()),
+            Some(n) => (format!("{n:.0} pending"), AMBER()),
+            None => ("—".into(), MUTED()),
         };
         ui::diag_row(ui, icon::BOX, "Package updates", &v, c);
         let (v, c) = match f("errors") {
-            Some(0.0) => ("none".into(), GREEN),
-            Some(n) => (format!("{n:.0}"), if n < 20.0 { AMBER } else { RED }),
-            None => ("—".into(), MUTED),
+            Some(0.0) => ("none".into(), GREEN()),
+            Some(n) => (format!("{n:.0}"), if n < 20.0 { AMBER() } else { RED() }),
+            None => ("—".into(), MUTED()),
         };
         ui::diag_row(ui, icon::FILE, "Errors in log since boot", &v, c);
         let (v, c): (String, _) = match s("ntp") {
-            "yes" => ("synced".into(), GREEN),
-            "no" => ("not synced".into(), AMBER),
-            _ => ("—".into(), MUTED),
+            "yes" => ("synced".into(), GREEN()),
+            "no" => ("not synced".into(), AMBER()),
+            _ => ("—".into(), MUTED()),
         };
         ui::diag_row(ui, icon::CLOCK, "Time sync", &v, c);
-        ui::diag_row(ui, icon::SWAP, "Swap used", s("swap"), MUTED);
-        ui::diag_row(ui, icon::CHIP, "Kernel", s("kernel"), MUTED);
-        ui::diag_row(ui, icon::CHART, "Top processes", s("top"), MUTED);
+        ui::diag_row(ui, icon::SWAP, "Swap used", s("swap"), MUTED());
+        ui::diag_row(ui, icon::CHIP, "Kernel", s("kernel"), MUTED());
+        ui::diag_row(ui, icon::CHART, "Top processes", s("top"), MUTED());
     });
 }
 
 /// Decodes `vcgencmd get_throttled` (Raspberry Pi firmware flags).
 fn throttled(raw: &str) -> (String, egui::Color32) {
     let Ok(bits) = u32::from_str_radix(raw.trim_start_matches("0x"), 16) else {
-        return ("n/a".into(), MUTED);
+        return ("n/a".into(), MUTED());
     };
     if bits & 0x1 != 0 {
-        ("under-voltage now!".into(), RED)
+        ("under-voltage now!".into(), RED())
     } else if bits & 0x4 != 0 {
-        ("throttled now".into(), RED)
+        ("throttled now".into(), RED())
     } else if bits & 0x8 != 0 {
-        ("temperature limit".into(), AMBER)
+        ("temperature limit".into(), AMBER())
     } else if bits & 0x1_0000 != 0 {
-        ("under-voltage since boot".into(), AMBER)
+        ("under-voltage since boot".into(), AMBER())
     } else if bits & 0x4_0000 != 0 {
-        ("throttled since boot".into(), AMBER)
+        ("throttled since boot".into(), AMBER())
     } else if bits == 0 {
-        ("OK".into(), GREEN)
+        ("OK".into(), GREEN())
     } else {
-        (format!("flags {raw}"), AMBER)
+        (format!("flags {raw}"), AMBER())
     }
 }
 
 fn level(v: f64, warn: f64, hot: f64) -> egui::Color32 {
     if v >= hot {
-        RED
+        RED()
     } else if v >= warn {
-        AMBER
+        AMBER()
     } else {
-        GREEN
+        GREEN()
     }
 }
 
@@ -1520,7 +1522,7 @@ impl eframe::App for App {
             Err(err) => {
                 let err = err.clone();
                 egui::CentralPanel::default().frame(ui::page_frame()).show(ctx, |ui| {
-                    ui::notice(ui, Some(icon::WARN), &err, RED);
+                    ui::notice(ui, Some(icon::WARN), &err, RED());
                 });
                 return;
             }
@@ -1530,6 +1532,10 @@ impl eframe::App for App {
             (d.pis.clone(), d.status.clone())
         };
         let settings = shared.settings.lock().unwrap().clone();
+        if ui::theme::is_light() != settings.light {
+            ui::theme::set_light(settings.light);
+            ui::apply_theme(ctx);
+        }
         self.check_alerts(ctx, &pis, &status, settings.hot_c);
         self.settings = settings;
 
@@ -1558,7 +1564,7 @@ impl eframe::App for App {
 
         // ── Top bar ──
         egui::TopBottomPanel::top("top")
-            .frame(Frame::none().fill(BG).inner_margin(Margin::symmetric(28.0, 18.0)))
+            .frame(Frame::none().fill(BG()).inner_margin(Margin::symmetric(28.0, 18.0)))
             .show_separator_line(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -1566,17 +1572,17 @@ impl eframe::App for App {
                     ui.add_space(6.0);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        ui.label(RichText::new("Home Lab").size(21.0).strong().color(TEXT));
-                        ui.label(RichText::new(format!("{} device{}", pis.len(), if pis.len() == 1 { "" } else { "s" })).small().color(MUTED));
+                        ui.label(RichText::new("Home Lab").size(21.0).strong().color(TEXT()));
+                        ui.label(RichText::new(format!("{} device{}", pis.len(), if pis.len() == 1 { "" } else { "s" })).small().color(MUTED()));
                     });
                     ui.add_space(14.0);
                     let online = status.values().filter(|s| s.state == State::Online).count();
                     let down = status.values().filter(|s| matches!(s.state, State::Offline | State::SetupFailed)).count();
                     if online > 0 {
-                        ui::pill(ui, &format!("{online} online"), GREEN, false);
+                        ui::pill(ui, &format!("{online} online"), GREEN(), false);
                     }
                     if down > 0 {
-                        ui::pill(ui, &format!("{down} offline"), RED, false);
+                        ui::pill(ui, &format!("{down} offline"), RED(), false);
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1632,7 +1638,7 @@ impl eframe::App for App {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(icon::GEAR).size(18.0).color(ACCENT));
-                        ui.label(RichText::new("Settings").size(19.0).strong().color(TEXT));
+                        ui.label(RichText::new("Settings").size(19.0).strong().color(TEXT()));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui::icon_button(ui, icon::XMARK, "Close").clicked() {
                                 close = true;
@@ -1641,15 +1647,26 @@ impl eframe::App for App {
                     });
                     ui.add_space(14.0);
                     egui::Grid::new("settings_grid").num_columns(2).spacing([16.0, 12.0]).show(ui, |ui| {
-                        ui.label(RichText::new(format!("{}  Hot alert at", icon::TEMP)).color(TEXT));
+                        ui.label(RichText::new(format!("{}  Hot alert at", icon::TEMP)).color(TEXT()));
                         ui.add(egui::DragValue::new(&mut draft.hot_c).range(40.0..=95.0).speed(0.5).suffix(" °C"));
                         ui.end_row();
-                        ui.label(RichText::new(format!("{}  Check every", icon::REFRESH)).color(TEXT));
+                        ui.label(RichText::new(format!("{}  Check every", icon::REFRESH)).color(TEXT()));
                         ui.add(egui::DragValue::new(&mut draft.poll_secs).range(5..=300).suffix(" s"));
+                        ui.end_row();
+                        ui.label(RichText::new(format!("{}  Theme", icon::PALETTE)).color(TEXT()));
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.spacing_mut().button_padding = egui::vec2(12.0, 2.0);
+                            for (light, name) in [(false, "Dark"), (true, "Light")] {
+                                if ui::tab(ui, name, draft.light == light).clicked() {
+                                    draft.light = light;
+                                }
+                            }
+                        });
                         ui.end_row();
                     });
                     ui.add_space(6.0);
-                    ui.label(RichText::new("Drag the numbers or double-click to type.").small().color(MUTED));
+                    ui.label(RichText::new("Drag the numbers or double-click to type.").small().color(MUTED()));
                     ui.add_space(14.0);
                     ui::divider(ui);
                     ui.add_space(10.0);
@@ -1721,11 +1738,11 @@ impl eframe::App for App {
                 if pis.is_empty() {
                     ui.add_space(90.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(RichText::new(icon::SERVER).size(46.0).color(LINE_STRONG));
+                        ui.label(RichText::new(icon::SERVER).size(46.0).color(LINE_STRONG()));
                         ui.add_space(14.0);
-                        ui.label(RichText::new("No Pis yet").size(18.0).strong().color(TEXT));
+                        ui.label(RichText::new("No Pis yet").size(18.0).strong().color(TEXT()));
                         ui.add_space(2.0);
-                        ui.label(RichText::new("Add one with its IP, user and password. The app does the rest.").color(MUTED));
+                        ui.label(RichText::new("Add one with its IP, user and password. The app does the rest.").color(MUTED()));
                         ui.add_space(18.0);
                         if ui::primary_button(ui, &format!("{}  Add your first Pi", icon::PLUS)).clicked() {
                             self.open_form(FormMode::Add, None);

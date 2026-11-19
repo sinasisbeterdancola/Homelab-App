@@ -5,22 +5,52 @@ use eframe::egui::{
     Sense, Stroke, TextEdit, Ui,
 };
 
+/// Colours for the dark and the light theme. They're functions (named like
+/// constants) so the whole app can switch theme at runtime.
+#[allow(non_snake_case)]
 pub mod theme {
     use eframe::egui::Color32;
-    pub const BG: Color32 = Color32::from_rgb(13, 15, 20);
-    pub const CARD: Color32 = Color32::from_rgb(22, 25, 32);
-    pub const INPUT: Color32 = Color32::from_rgb(16, 18, 24);
-    pub const RAISED: Color32 = Color32::from_rgb(32, 36, 46);
-    pub const RAISED_HOVER: Color32 = Color32::from_rgb(42, 47, 59);
-    pub const LINE: Color32 = Color32::from_rgb(36, 40, 50);
-    pub const LINE_STRONG: Color32 = Color32::from_rgb(58, 64, 78);
-    pub const TEXT: Color32 = Color32::from_rgb(232, 235, 241);
-    pub const MUTED: Color32 = Color32::from_rgb(136, 145, 162);
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static LIGHT: AtomicBool = AtomicBool::new(false);
+
+    pub fn set_light(light: bool) {
+        LIGHT.store(light, Ordering::Relaxed);
+    }
+
+    pub fn is_light() -> bool {
+        LIGHT.load(Ordering::Relaxed)
+    }
+
+    macro_rules! colors {
+        ($($name:ident: $dark:expr, $light:expr;)*) => {$(
+            pub fn $name() -> Color32 {
+                if is_light() { $light } else { $dark }
+            }
+        )*};
+    }
+
+    const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
+        Color32::from_rgb(r, g, b)
+    }
+
+    colors! {
+        BG:           rgb(13, 15, 20),    rgb(243, 245, 249);
+        CARD:         rgb(22, 25, 32),    rgb(255, 255, 255);
+        INPUT:        rgb(16, 18, 24),    rgb(246, 247, 250);
+        RAISED:       rgb(32, 36, 46),    rgb(233, 236, 242);
+        RAISED_HOVER: rgb(42, 47, 59),    rgb(221, 225, 233);
+        LINE:         rgb(36, 40, 50),    rgb(226, 229, 236);
+        LINE_STRONG:  rgb(58, 64, 78),    rgb(196, 202, 214);
+        TEXT:         rgb(232, 235, 241), rgb(24, 27, 34);
+        MUTED:        rgb(136, 145, 162), rgb(102, 110, 126);
+        GREEN:        rgb(52, 211, 153),  rgb(22, 163, 74);
+        AMBER:        rgb(251, 191, 36),  rgb(217, 119, 6);
+        RED:          rgb(248, 113, 113), rgb(220, 38, 38);
+    }
+
     pub const ACCENT: Color32 = Color32::from_rgb(91, 140, 255);
     pub const ACCENT_HOVER: Color32 = Color32::from_rgb(116, 158, 255);
-    pub const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
-    pub const AMBER: Color32 = Color32::from_rgb(251, 191, 36);
-    pub const RED: Color32 = Color32::from_rgb(248, 113, 113);
     pub const CARD_PAD: f32 = 20.0;
 }
 use theme::*;
@@ -67,6 +97,7 @@ pub mod icon {
     pub const POWER: &str = "\u{f011}";
     pub const PEN: &str = "\u{f304}";
     pub const GEAR: &str = "\u{f013}";
+    pub const PALETTE: &str = "\u{f53f}";
     pub const REBOOT: &str = "\u{f2f9}";
     pub const CLOUD_DOWN: &str = "\u{f0ed}";
 }
@@ -78,7 +109,7 @@ pub fn section_title(ui: &mut Ui, text: &str) {
             .size(11.0)
             .strong()
             .extra_letter_spacing(1.2)
-            .color(MUTED),
+            .color(MUTED()),
     );
 }
 
@@ -87,8 +118,8 @@ pub fn diag_row(ui: &mut Ui, icon: &str, label: &str, value: &str, color: Color3
     ui.horizontal(|ui| {
         ui.set_min_height(28.0);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), Sense::hover());
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(13.0), MUTED);
-        ui.label(RichText::new(label).color(TEXT));
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(13.0), MUTED());
+        ui.label(RichText::new(label).color(TEXT()));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let value: String = if value.chars().count() > 46 {
                 value.chars().take(45).chain(['…']).collect()
@@ -103,19 +134,19 @@ pub fn diag_row(ui: &mut Ui, icon: &str, label: &str, value: &str, color: Color3
 /// Big number with a unit, for speedtest results.
 pub fn speed_tile(ui: &mut Ui, icon: &str, label: &str, value: &str, unit: &str) {
     ui.spacing_mut().item_spacing.y = 2.0;
-    ui.label(RichText::new(format!("{icon}  {label}")).small().color(MUTED));
+    ui.label(RichText::new(format!("{icon}  {label}")).small().color(MUTED()));
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(RichText::new(value).size(24.0).strong().color(TEXT));
-        ui.label(RichText::new(unit).small().color(MUTED));
+        ui.label(RichText::new(value).size(24.0).strong().color(TEXT()));
+        ui.label(RichText::new(unit).small().color(MUTED()));
     });
 }
 
 /// Rounded inset panel used for sections in dialogs.
 pub fn inset(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     Frame::none()
-        .fill(BG)
-        .stroke(Stroke::new(1.0_f32, LINE))
+        .fill(BG())
+        .stroke(Stroke::new(1.0_f32, LINE()))
         .rounding(12.0)
         .inner_margin(Margin::symmetric(16.0, 12.0))
         .show(ui, |ui| {
@@ -135,35 +166,7 @@ pub fn install(ctx: &egui::Context) {
         fonts.families.get_mut(&family).unwrap().push("fa".into());
     }
     ctx.set_fonts(fonts);
-
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = CARD;
-    v.window_stroke = Stroke::new(1.0_f32, LINE_STRONG);
-    v.window_rounding = 16.0.into();
-    v.window_shadow = egui::epaint::Shadow { offset: egui::vec2(0.0, 12.0), blur: 40.0, spread: 0.0, color: Color32::from_black_alpha(150) };
-    v.extreme_bg_color = INPUT;
-    v.faint_bg_color = CARD;
-    v.selection.bg_fill = ACCENT.gamma_multiply(0.45);
-    v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
-    v.hyperlink_color = ACCENT;
-    for (w, fill) in [
-        (&mut v.widgets.inactive, RAISED),
-        (&mut v.widgets.hovered, RAISED_HOVER),
-        (&mut v.widgets.active, RAISED_HOVER),
-        (&mut v.widgets.open, RAISED),
-    ] {
-        w.weak_bg_fill = fill;
-        w.bg_fill = fill;
-        w.rounding = 8.0.into();
-        w.fg_stroke.color = TEXT;
-    }
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
-    v.widgets.noninteractive.fg_stroke.color = TEXT;
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, LINE_STRONG);
-    v.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);
-    ctx.set_visuals(v);
+    apply_theme(ctx);
 
     ctx.style_mut(|s| {
         use egui::{FontId, TextStyle::*};
@@ -184,8 +187,42 @@ pub fn install(ctx: &egui::Context) {
     });
 }
 
+/// Applies the current theme (see `theme::set_light`) to egui's widget colours.
+pub fn apply_theme(ctx: &egui::Context) {
+    let light = theme::is_light();
+    let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
+    v.panel_fill = BG();
+    v.window_fill = CARD();
+    v.window_stroke = Stroke::new(1.0_f32, LINE_STRONG());
+    v.window_rounding = 16.0.into();
+    let shadow = if light { Color32::from_black_alpha(40) } else { Color32::from_black_alpha(150) };
+    v.window_shadow = egui::epaint::Shadow { offset: egui::vec2(0.0, 12.0), blur: 40.0, spread: 0.0, color: shadow };
+    v.extreme_bg_color = INPUT();
+    v.faint_bg_color = CARD();
+    v.selection.bg_fill = ACCENT.gamma_multiply(0.45);
+    v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
+    v.hyperlink_color = ACCENT;
+    for (w, fill) in [
+        (&mut v.widgets.inactive, RAISED()),
+        (&mut v.widgets.hovered, RAISED_HOVER()),
+        (&mut v.widgets.active, RAISED_HOVER()),
+        (&mut v.widgets.open, RAISED()),
+    ] {
+        w.weak_bg_fill = fill;
+        w.bg_fill = fill;
+        w.rounding = 8.0.into();
+        w.fg_stroke.color = TEXT();
+    }
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE());
+    v.widgets.noninteractive.fg_stroke.color = TEXT();
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE());
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, LINE_STRONG());
+    v.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    ctx.set_visuals(v);
+}
+
 pub fn page_frame() -> Frame {
-    Frame::none().fill(BG).inner_margin(Margin { left: 28.0, right: 28.0, top: 4.0, bottom: 20.0 })
+    Frame::none().fill(BG()).inner_margin(Margin { left: 28.0, right: 28.0, top: 4.0, bottom: 20.0 })
 }
 
 pub fn text_input(text: &mut String) -> TextEdit<'_> {
@@ -193,7 +230,7 @@ pub fn text_input(text: &mut String) -> TextEdit<'_> {
 }
 
 pub fn field_label(ui: &mut Ui, icon: &str, text: &str) {
-    ui.label(RichText::new(format!("{icon}  {text}")).small().color(MUTED));
+    ui.label(RichText::new(format!("{icon}  {text}")).small().color(MUTED()));
 }
 
 pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
@@ -210,7 +247,7 @@ pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
 }
 
 pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
-    ui.add(Button::new(RichText::new(text).color(TEXT)).min_size(egui::vec2(0.0, 34.0)))
+    ui.add(Button::new(RichText::new(text).color(TEXT())).min_size(egui::vec2(0.0, 34.0)))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -225,7 +262,7 @@ pub fn danger_button(ui: &mut Ui, text: &str) -> Response {
 
 pub fn icon_button(ui: &mut Ui, icon: &str, tip: &str) -> Response {
     ui.add(
-        Button::new(RichText::new(icon).size(14.0).color(MUTED))
+        Button::new(RichText::new(icon).size(14.0).color(MUTED()))
             .frame(false)
             .min_size(egui::vec2(30.0, 30.0)),
     )
@@ -269,11 +306,11 @@ pub fn pill(ui: &mut Ui, text: &str, color: Color32, pulse: bool) {
 /// One stat: icon + label, big value, thin coloured bar.
 pub fn metric(ui: &mut Ui, icon: &str, label: &str, value: &str, frac: f64, color: Color32) {
     ui.spacing_mut().item_spacing.y = 4.0;
-    ui.label(RichText::new(format!("{icon}  {label}")).small().color(MUTED));
-    ui.label(RichText::new(value).size(15.0).strong().color(TEXT));
+    ui.label(RichText::new(format!("{icon}  {label}")).small().color(MUTED()));
+    ui.label(RichText::new(value).size(15.0).strong().color(TEXT()));
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 3.0, LINE);
+    p.rect_filled(rect, 3.0, LINE());
     let mut fill = rect;
     fill.set_width(rect.width() * frac.clamp(0.0, 1.0) as f32);
     if fill.width() > 0.0 {
@@ -283,7 +320,7 @@ pub fn metric(ui: &mut Ui, icon: &str, label: &str, value: &str, frac: f64, colo
 
 /// Small pill-shaped toggle button.
 pub fn tab(ui: &mut Ui, text: &str, selected: bool) -> Response {
-    let (fill, color) = if selected { (ACCENT.gamma_multiply(0.18), ACCENT) } else { (Color32::TRANSPARENT, MUTED) };
+    let (fill, color) = if selected { (ACCENT.gamma_multiply(0.18), ACCENT) } else { (Color32::TRANSPARENT, MUTED()) };
     ui.add(
         Button::new(RichText::new(text).small().color(color))
             .fill(fill)
@@ -307,7 +344,7 @@ pub fn sparkline(
 ) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 52.0), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 6.0, BG);
+    p.rect_filled(rect, 6.0, BG());
     if values.is_empty() {
         return;
     }
@@ -317,7 +354,7 @@ pub fn sparkline(
         egui::Align2::RIGHT_TOP,
         format!("{min:.1} – {max:.1} {unit}"),
         egui::FontId::proportional(10.5),
-        MUTED,
+        MUTED(),
     );
     // Leave room at the top for the min–max label.
     let inner = egui::Rect::from_min_max(rect.min + egui::vec2(8.0, 18.0), rect.max - egui::vec2(8.0, 6.0));
@@ -358,14 +395,14 @@ pub fn notice(ui: &mut Ui, icon: Option<&str>, text: &str, color: Color32) {
                     }
                 }
                 // Long messages (errors with paths) wrap instead of running off-screen.
-                ui.add(egui::Label::new(RichText::new(text).color(TEXT)).wrap());
+                ui.add(egui::Label::new(RichText::new(text).color(TEXT())).wrap());
             });
         });
 }
 
 pub fn divider(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, LINE);
+    ui.painter().rect_filled(rect, 0.0, LINE());
 }
 
 /// Darkens everything behind a modal dialog.
