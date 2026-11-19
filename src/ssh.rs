@@ -7,7 +7,7 @@ use russh::{client, ChannelMsg, Disconnect};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Host-key checking, "trust on first use": the fingerprint seen during setup
@@ -46,12 +46,28 @@ fn e<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
+/// One shared runtime for the whole app, so SSH sessions (which run as tasks on
+/// it) can outlive a single call and be reused by the next poll.
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
 fn block_on<F: Future>(fut: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime")
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("tokio runtime")
+        })
         .block_on(fut)
+}
+
+/// Open polling sessions per (host, port, user), with the host key they were verified with.
+type PoolKey = (String, u16, String);
+static POOL: OnceLock<Mutex<HashMap<PoolKey, (Arc<Session>, String)>>> = OnceLock::new();
+
+fn pool() -> &'static Mutex<HashMap<PoolKey, (Arc<Session>, String)>> {
+    POOL.get_or_init(Default::default)
 }
 
 /// Connects and logs in. `host_key` is the fingerprint we expect (None = first
@@ -212,12 +228,34 @@ pub fn poll(
     key: &Path,
     host_key: Option<&str>,
 ) -> Result<(HashMap<String, String>, String), String> {
+    const EXEC_TIMEOUT: Duration = Duration::from_secs(15);
+    let k: PoolKey = (host.to_string(), port, user.to_string());
     block_on(async {
+        // Reuse the open session if it was verified against the same host key.
+        let cached = pool().lock().unwrap().get(&k).cloned();
+        if let Some((sess, fp)) = cached {
+            if host_key.is_none_or(|exp| exp == fp) {
+                if let Ok(Ok((_, out))) = tokio::time::timeout(EXEC_TIMEOUT, exec(&sess, STATS_SCRIPT, None)).await {
+                    return Ok((parse_kv(&out), fp));
+                }
+            }
+            // Dead (Pi rebooted, network dropped) or key changed: reconnect.
+            pool().lock().unwrap().remove(&k);
+        }
+
         let (sess, fp) = connect(host, port, user, Auth::Key(key), host_key).await?;
-        let (_, out) = exec(&sess, STATS_SCRIPT, None).await?;
-        close(sess).await;
+        let sess = Arc::new(sess);
+        let (_, out) = tokio::time::timeout(EXEC_TIMEOUT, exec(&sess, STATS_SCRIPT, None))
+            .await
+            .map_err(|_| "timed out".to_string())??;
+        pool().lock().unwrap().insert(k, (sess, fp.clone()));
         Ok((parse_kv(&out), fp))
     })
+}
+
+/// Closes the pooled session for a Pi (after it was removed or edited).
+pub fn forget(host: &str, port: u16, user: &str) {
+    pool().lock().unwrap().remove(&(host.to_string(), port, user.to_string()));
 }
 
 const DIAG_SCRIPT: &str = r#"

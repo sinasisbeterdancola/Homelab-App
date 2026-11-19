@@ -707,6 +707,9 @@ impl App {
             let Some(pi) = d.pis.iter_mut().find(|p| p.id == id) else { return };
             let (host, user) = (f.host.trim().to_string(), f.user.trim().to_string());
             let moved = pi.host != host || pi.port != f.port || pi.user != user;
+            if moved {
+                ssh::forget(&pi.host, pi.port, &pi.user);
+            }
             pi.name = if f.name.trim().is_empty() { host.clone() } else { f.name.trim().into() };
             pi.host = host;
             pi.port = f.port;
@@ -937,6 +940,7 @@ impl App {
                                     d.pis.retain(|p| p.id != pi.id);
                                     d.status.remove(&pi.id);
                                 }
+                                ssh::forget(&pi.host, pi.port, &pi.user);
                                 shared.save();
                             }
                             if ui::secondary_button(ui, "Cancel").clicked() {
