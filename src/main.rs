@@ -50,10 +50,33 @@ struct Status {
     temp_history: VecDeque<f32>,
     /// CPU load as % of all cores, same timeline.
     load_history: VecDeque<f32>,
+    /// Memory in use as % of total, same timeline.
+    mem_history: VecDeque<f32>,
 }
 
 /// 10 minutes at one poll every 10 s.
 const HISTORY_LEN: usize = 60;
+
+/// Which history graph a card shows.
+#[derive(Clone, Copy, PartialEq, Default)]
+enum Graph {
+    #[default]
+    Temp,
+    Load,
+    Mem,
+}
+
+impl Graph {
+    const ALL: [Graph; 3] = [Graph::Temp, Graph::Load, Graph::Mem];
+
+    fn label(self) -> &'static str {
+        match self {
+            Graph::Temp => "Temp",
+            Graph::Load => "Load",
+            Graph::Mem => "Mem",
+        }
+    }
+}
 
 type Kv = HashMap<String, String>;
 
@@ -282,6 +305,13 @@ impl Shared {
                     if let Some(l) = load {
                         push(&mut s.load_history, l / cpus * 100.0);
                     }
+                    // Memory in use as % of total.
+                    let kb = |k: &str| stats.get(k).and_then(|v| v.parse::<f32>().ok());
+                    if let (Some(total), Some(avail)) = (kb("mem_total"), kb("mem_avail")) {
+                        if total > 0.0 {
+                            push(&mut s.mem_history, (total - avail) / total * 100.0);
+                        }
+                    }
                     s.stats = stats;
                 }
                 Err(err) => {
@@ -499,7 +529,7 @@ struct App {
     /// Settings being edited in the settings window (None = window closed).
     settings_draft: Option<Settings>,
     /// Pis whose card shows the load graph instead of the temperature graph.
-    graph_load: HashSet<u64>,
+    graph: HashMap<u64, Graph>,
 }
 
 struct Alert {
@@ -527,7 +557,7 @@ impl App {
             alerts: Vec::new(),
             settings: Settings::default(),
             settings_draft: None,
-            graph_load: HashSet::new(),
+            graph: HashMap::new(),
         }
     }
 
@@ -997,30 +1027,26 @@ impl App {
                         if s.temp_history.len() >= 2 || s.load_history.len() >= 2 {
                             let minutes = (HISTORY_LEN as u64 * self.settings.poll_secs).div_ceil(60);
                             ui.add_space(10.0);
-                            // Temp | Load switch, remembered per Pi.
-                            let show_load = self.graph_load.contains(&pi.id);
+                            // Temp | Load | Mem switch, remembered per Pi.
+                            let current = self.graph.get(&pi.id).copied().unwrap_or_default();
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 ui.spacing_mut().button_padding = egui::vec2(10.0, 2.0);
-                                for (load, name) in [(false, "Temp"), (true, "Load")] {
-                                    if ui::tab(ui, name, show_load == load).clicked() {
-                                        if load {
-                                            self.graph_load.insert(pi.id);
-                                        } else {
-                                            self.graph_load.remove(&pi.id);
-                                        }
+                                for g in Graph::ALL {
+                                    if ui::tab(ui, g.label(), current == g).clicked() {
+                                        self.graph.insert(pi.id, g);
                                     }
                                 }
                                 ui.label(RichText::new(format!("· last {minutes} min")).small().color(MUTED));
                             });
-                            if show_load {
-                                let latest = s.load_history.back().copied().unwrap_or(0.0) as f64;
-                                ui::sparkline(ui, &s.load_history, HISTORY_LEN, "%", 10.0, level(latest, 60.0, 85.0));
-                            } else {
-                                let latest = s.temp_history.back().copied().unwrap_or(0.0) as f64;
-                                let hot = self.settings.hot_c as f64;
-                                ui::sparkline(ui, &s.temp_history, HISTORY_LEN, "°C", 2.0, level(latest, hot - 15.0, hot));
-                            }
+                            let hot = self.settings.hot_c as f64;
+                            let (values, unit, min_span, warn, bad) = match current {
+                                Graph::Temp => (&s.temp_history, "°C", 2.0, hot - 15.0, hot),
+                                Graph::Load => (&s.load_history, "%", 10.0, 60.0, 85.0),
+                                Graph::Mem => (&s.mem_history, "%", 10.0, 60.0, 85.0),
+                            };
+                            let latest = values.back().copied().unwrap_or(0.0) as f64;
+                            ui::sparkline(ui, values, HISTORY_LEN, unit, min_span, level(latest, warn, bad));
                         }
                     }
                     State::SettingUp => {
