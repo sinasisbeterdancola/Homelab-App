@@ -60,6 +60,15 @@ Your list of Pis (`pis.json`), the last known stats (`cache.json`) and the app's
 - macOS: `~/Library/Application Support/homelab`
 - Linux: `~/.config/homelab`
 
+## Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `F5` | Refresh all Pis now |
+| `Ctrl+N` (`⌘N` on macOS) | Add a Pi |
+| `Ctrl+,` (`⌘,` on macOS) | Settings |
+| `Esc` | Close a dialog |
+
 ## Alerts
 
 The app shows a banner (and flashes its taskbar icon) when a Pi goes offline, comes back online, or its CPU reaches 75 °C. You can change the temperature limit and how often the Pis are checked under the gear icon (*Settings*); they're saved in `settings.json`.

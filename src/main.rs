@@ -1442,6 +1442,29 @@ impl eframe::App for App {
         self.check_alerts(ctx, &pis, &status, settings.hot_c);
         self.settings = settings;
 
+        // Keyboard shortcuts (only when no dialog is open).
+        let dialog_open = self.show_form || self.diag_open.is_some() || self.settings_draft.is_some();
+        if !dialog_open {
+            use egui::{Key, KeyboardShortcut, Modifiers};
+            let (refresh, add, prefs) = ctx.input_mut(|i| {
+                (
+                    i.consume_key(Modifiers::NONE, Key::F5),
+                    i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::N)),
+                    i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma)),
+                )
+            });
+            if refresh && !pis.is_empty() {
+                let (s, c) = (shared.clone(), ctx.clone());
+                thread::spawn(move || s.poll_all(&c));
+            }
+            if add {
+                self.open_form(FormMode::Add, None);
+            }
+            if prefs {
+                self.settings_draft = Some(self.settings.clone());
+            }
+        }
+
         // ── Top bar ──
         egui::TopBottomPanel::top("top")
             .frame(Frame::none().fill(BG).inner_margin(Margin::symmetric(28.0, 18.0)))
@@ -1466,13 +1489,17 @@ impl eframe::App for App {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui::primary_button(ui, &format!("{}  Add Pi", icon::PLUS)).clicked() {
+                        let cmd = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" };
+                        if ui::primary_button(ui, &format!("{}  Add Pi", icon::PLUS))
+                            .on_hover_text(format!("Add a Pi ({cmd}N)"))
+                            .clicked()
+                        {
                             self.open_form(FormMode::Add, None);
                         }
-                        if ui::icon_button(ui, icon::GEAR, "Settings").clicked() {
+                        if ui::icon_button(ui, icon::GEAR, &format!("Settings ({cmd},)")).clicked() {
                             self.settings_draft = Some(self.settings.clone());
                         }
-                        if !pis.is_empty() && ui::icon_button(ui, icon::REFRESH, "Refresh now").clicked() {
+                        if !pis.is_empty() && ui::icon_button(ui, icon::REFRESH, "Refresh now (F5)").clicked() {
                             let (s, c) = (shared.clone(), ctx.clone());
                             thread::spawn(move || s.poll_all(&c));
                         }
