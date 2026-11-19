@@ -238,7 +238,7 @@ echo "swap=$(free -m 2>/dev/null | awk '/^Swap/{print $3" / "$2" MB"}')"
 echo "ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
 echo "kernel=$(uname -r)"
 # Second `top` frame = real current CPU use (the first frame is an average since start).
-echo "top=$(top -bn2 -d 0.5 -o %CPU 2>/dev/null | awk '/^top -/{n++} n==2 && /^ *[0-9]+ /{if (c++ < 3) printf "%s %s%%  ", $12, $9}')"
+echo "top=$(top -bn2 -d 0.5 -o %CPU 2>/dev/null | awk '/^top -/{n++} n==2 && /^ *[0-9]+ / && $12 != "top" {if (c++ < 3) printf "%s %s%%  ", $12, $9}')"
 "#;
 
 /// Health and network checks, plus the SSH round-trip time from this PC.
@@ -277,6 +277,45 @@ e=$(date +%s%N)
 echo "down=$(awk -v b="$b" -v s="$s" -v e="$e" 'BEGIN{printf "%.0f", b / ((e - s) / 1e9)}')"
 echo "up=$(head -c 25000000 /dev/zero | curl -s -o /dev/null -m 15 -w '%{speed_upload}' --data-binary @- https://speed.cloudflare.com/__up)"
 "#;
+
+/// Runs a root script (update, reboot, …). With a password it goes to `sudo -S`
+/// over stdin (never on the command line, never stored); without one it uses
+/// `sudo -n`, which fails fast instead of hanging if sudo wants a password.
+/// Returns (exit code, combined output).
+pub fn run_action(
+    host: &str,
+    port: u16,
+    user: &str,
+    key: &Path,
+    host_key: Option<&str>,
+    root_script: &str,
+    sudo_password: Option<&str>,
+) -> Result<(u32, String), String> {
+    let sudo = if sudo_password.is_some() { "sudo -S -p ''" } else { "sudo -n" };
+    let command = format!("{sudo} bash -c 'echo {} | base64 -d | bash' 2>&1", base64(root_script.as_bytes()));
+    let command = command.as_str();
+    let stdin = sudo_password.map(|p| format!("{p}\n"));
+    block_on(async {
+        let (sess, _) = connect(host, port, user, Auth::Key(key), host_key).await?;
+        let result = exec(&sess, command, stdin.as_deref()).await;
+        close(sess).await;
+        let (code, out) = match result {
+            Ok(r) => r,
+            // reboot/poweroff can drop the connection before an exit code arrives
+            Err(err) if root_script.contains("reboot") || root_script.contains("poweroff") => {
+                return Ok((0, format!("connection closed ({err})")));
+            }
+            Err(err) => return Err(err),
+        };
+        if out.contains("a password is required") {
+            return Err("This Pi needs a sudo password. Enter it and try again.".into());
+        }
+        if out.contains("incorrect password") || out.contains("Sorry, try again") {
+            return Err("Wrong sudo password.".into());
+        }
+        Ok((code, out))
+    })
+}
 
 fn mbps(bytes: usize, d: Duration) -> String {
     format!("{:.1}", bytes as f64 * 8.0 / d.as_secs_f64().max(1e-6) / 1e6)

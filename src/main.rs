@@ -58,6 +58,81 @@ struct Diag {
     checks: Option<Result<Kv, String>>,
     speed_running: bool,
     speed: Option<Result<Kv, String>>,
+    action_running: Option<Action>,
+    action_result: Option<(Action, Result<(u32, String), String>)>,
+}
+
+/// Admin actions from the diagnostics window.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Action {
+    Update,
+    Reboot,
+    Shutdown,
+}
+
+impl Action {
+    const ALL: [Action; 3] = [Action::Update, Action::Reboot, Action::Shutdown];
+
+    fn label(self) -> &'static str {
+        match self {
+            Action::Update => "Update packages",
+            Action::Reboot => "Reboot",
+            Action::Shutdown => "Shut down",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Action::Update => icon::CLOUD_DOWN,
+            Action::Reboot => icon::REBOOT,
+            Action::Shutdown => icon::POWER,
+        }
+    }
+
+    /// Script that runs as root (via sudo) on the Pi.
+    fn root_script(self) -> &'static str {
+        match self {
+            Action::Update => "export DEBIAN_FRONTEND=noninteractive\napt-get update && apt-get -y upgrade\n",
+            Action::Reboot => "systemctl reboot\n",
+            Action::Shutdown => "systemctl poweroff\n",
+        }
+    }
+
+    fn confirm_text(self) -> &'static str {
+        match self {
+            Action::Update => "Install all pending package updates? This can take several minutes.",
+            Action::Reboot => "Reboot this Pi now? It will be offline for about a minute.",
+            Action::Shutdown => "Shut down this Pi? You'll have to power it on again by hand.",
+        }
+    }
+}
+
+fn run_action(shared: &Arc<Shared>, ctx: &egui::Context, pi: &Pi, action: Action, sudo_password: String) {
+    {
+        let mut d = shared.data.lock().unwrap();
+        let g = d.diags.entry(pi.id).or_default();
+        if g.action_running.is_some() {
+            return;
+        }
+        g.action_running = Some(action);
+        g.action_result = None;
+    }
+    let (shared, ctx, pi) = (shared.clone(), ctx.clone(), pi.clone());
+    thread::spawn(move || {
+        let pw = (!sudo_password.is_empty()).then_some(sudo_password.as_str());
+        let result = ssh::run_action(&pi.host, pi.port, &pi.user, &shared.key, pi.host_key.as_deref(), action.root_script(), pw);
+        {
+            let mut d = shared.data.lock().unwrap();
+            let g = d.diags.entry(pi.id).or_default();
+            g.action_running = None;
+            g.action_result = Some((action, result));
+        }
+        ctx.request_repaint();
+        if action != Action::Update {
+            shared.poll(&pi); // shows the Pi going offline right away
+            ctx.request_repaint();
+        }
+    });
 }
 
 #[derive(Default)]
@@ -299,6 +374,9 @@ struct App {
     confirm_remove: Option<u64>,
     open_logs: HashSet<u64>,
     diag_open: Option<u64>,
+    confirm_action: Option<(u64, Action)>,
+    /// Typed in the confirm step, handed to the action, then cleared. Never saved.
+    sudo_password: String,
 }
 
 impl App {
@@ -311,6 +389,8 @@ impl App {
             confirm_remove: None,
             open_logs: HashSet::new(),
             diag_open: None,
+            confirm_action: None,
+            sudo_password: String::new(),
         }
     }
 
@@ -398,6 +478,75 @@ impl App {
             });
             if g.checks_running && g.checks.is_some() {
                 ui.add(egui::Spinner::new().size(14.0).color(MUTED));
+            }
+        });
+
+        ui.add_space(18.0);
+        self.actions_ui(ui, shared, pi, g);
+    }
+
+    /// Update / reboot / shut down, each behind a confirmation.
+    fn actions_ui(&mut self, ui: &mut egui::Ui, shared: &Arc<Shared>, pi: &Pi, g: &Diag) {
+        ui::section_title(ui, "Actions");
+        ui::inset(ui, |ui| {
+            match self.confirm_action {
+                Some((id, action)) if id == pi.id => {
+                    ui.label(RichText::new(action.confirm_text()).color(TEXT));
+                    ui.add_space(6.0);
+                    ui::field_label(ui, icon::LOCK, "Sudo password (leave empty if not needed, never saved)");
+                    let pw = ui.add(ui::text_input(&mut self.sudo_password).password(true));
+                    let enter = pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let go = if action == Action::Update {
+                            ui::primary_button(ui, &format!("{}  {}", action.icon(), action.label()))
+                        } else {
+                            ui::danger_button(ui, &format!("{}  {}", action.icon(), action.label()))
+                        };
+                        if go.clicked() || enter {
+                            self.confirm_action = None;
+                            run_action(shared, ui.ctx(), pi, action, std::mem::take(&mut self.sudo_password));
+                        }
+                        if ui::secondary_button(ui, "Cancel").clicked() {
+                            self.confirm_action = None;
+                            self.sudo_password.clear();
+                        }
+                    });
+                }
+                _ => {
+                    ui.add_enabled_ui(g.action_running.is_none(), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for action in Action::ALL {
+                                if ui::secondary_button(ui, &format!("{}  {}", action.icon(), action.label())).clicked() {
+                                    self.confirm_action = Some((pi.id, action));
+                                }
+                            }
+                        });
+                    });
+                }
+            }
+
+            if let Some(action) = g.action_running {
+                ui.add_space(6.0);
+                ui::notice(ui, None, &format!("{}…", action.label()), ACCENT);
+            } else if let Some((action, result)) = &g.action_result {
+                ui.add_space(6.0);
+                match result {
+                    Ok((0, out)) => {
+                        let msg = match action {
+                            Action::Update => "Updates installed.",
+                            Action::Reboot => "Reboot started. The Pi will come back online by itself.",
+                            Action::Shutdown => "Shutdown started.",
+                        };
+                        ui::notice(ui, Some(icon::LIST_CHECK), msg, GREEN);
+                        action_log(ui, pi.id, out);
+                    }
+                    Ok((code, out)) => {
+                        ui::notice(ui, Some(icon::WARN), &format!("{} failed (exit code {code})", action.label()), RED);
+                        action_log(ui, pi.id, out);
+                    }
+                    Err(err) => ui::notice(ui, Some(icon::WARN), err, RED),
+                }
             }
         });
     }
@@ -703,6 +852,24 @@ fn metrics(ui: &mut egui::Ui, st: &HashMap<String, String>) {
         ui.add_space(10.0);
         ui.label(RichText::new(format!("{}  {}", icon::CHIP, info.join("  ·  "))).small().color(MUTED));
     }
+}
+
+/// Collapsible command output (last lines matter most, so it sticks to the bottom).
+fn action_log(ui: &mut egui::Ui, id: u64, out: &str) {
+    if out.trim().is_empty() {
+        return;
+    }
+    egui::CollapsingHeader::new(RichText::new("Output").small().color(MUTED))
+        .id_salt(("action_log", id))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(("action_scroll", id))
+                .max_height(160.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.label(RichText::new(out.trim_end()).monospace().size(11.5).color(MUTED));
+                });
+        });
 }
 
 fn speed_results(ui: &mut egui::Ui, m: &Kv) {
