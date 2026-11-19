@@ -288,7 +288,19 @@ pub fn diagnostics(
     host_key: Option<&str>,
 ) -> Result<HashMap<String, String>, String> {
     block_on(async {
-        let (sess, _) = connect(host, port, user, Auth::Key(key), host_key).await?;
+        // Use the polling session when it's open: faster, and the round-trip
+        // below then measures the command, not the connection setup.
+        let k: PoolKey = (host.to_string(), port, user.to_string());
+        let cached = pool()
+            .lock()
+            .unwrap()
+            .get(&k)
+            .filter(|(s, fp)| !s.is_closed() && host_key.is_none_or(|exp| exp == fp))
+            .map(|(s, _)| s.clone());
+        let (sess, owned) = match cached {
+            Some(s) => (s, false),
+            None => (Arc::new(connect(host, port, user, Auth::Key(key), host_key).await?.0), true),
+        };
         let mut total = Duration::ZERO;
         for _ in 0..3 {
             let t = Instant::now();
@@ -296,7 +308,11 @@ pub fn diagnostics(
             total += t.elapsed();
         }
         let (_, out) = exec(&sess, DIAG_SCRIPT, None).await?;
-        close(sess).await;
+        if owned {
+            if let Ok(sess) = Arc::try_unwrap(sess) {
+                close(sess).await;
+            }
+        }
         let mut map = parse_kv(&out);
         map.insert("ssh_ms".into(), format!("{:.1}", total.as_secs_f64() * 1000.0 / 3.0));
         Ok(map)
