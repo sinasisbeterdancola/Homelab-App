@@ -25,6 +25,9 @@ struct Pi {
     host: String,
     port: u16,
     user: String,
+    /// SHA256 fingerprint of the Pi's SSH host key, stored on first contact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_key: Option<String>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -84,9 +87,9 @@ fn run_diag(
     let (shared, ctx, pi) = (shared.clone(), ctx.clone(), pi.clone());
     thread::spawn(move || {
         let result = if speed {
-            ssh::speedtest(&pi.host, pi.port, &pi.user, &shared.key)
+            ssh::speedtest(&pi.host, pi.port, &pi.user, &shared.key, pi.host_key.as_deref())
         } else {
-            ssh::diagnostics(&pi.host, pi.port, &pi.user, &shared.key)
+            ssh::diagnostics(&pi.host, pi.port, &pi.user, &shared.key, pi.host_key.as_deref())
         };
         {
             let mut d = shared.data.lock().unwrap();
@@ -122,23 +125,36 @@ impl Shared {
     }
 
     fn poll(&self, pi: &Pi) {
-        let result = ssh::poll(&pi.host, pi.port, &pi.user, &self.key);
-        let mut d = self.data.lock().unwrap();
-        if !d.pis.iter().any(|p| p.id == pi.id) {
-            return; // removed while we were polling
+        let result = ssh::poll(&pi.host, pi.port, &pi.user, &self.key, pi.host_key.as_deref());
+        let mut learned_key = false;
+        {
+            let mut d = self.data.lock().unwrap();
+            let Some(stored) = d.pis.iter_mut().find(|p| p.id == pi.id) else {
+                return; // removed while we were polling
+            };
+            // Pis added before host-key checking existed: trust the key we see now.
+            if let Ok((_, fp)) = &result {
+                if stored.host_key.is_none() && !fp.is_empty() {
+                    stored.host_key = Some(fp.clone());
+                    learned_key = true;
+                }
+            }
+            let s = d.status.entry(pi.id).or_default();
+            match result {
+                Ok((stats, _)) => {
+                    s.state = State::Online;
+                    s.last_seen = Some(now());
+                    s.error = None;
+                    s.stats = stats;
+                }
+                Err(err) => {
+                    s.state = State::Offline;
+                    s.error = Some(err);
+                }
+            }
         }
-        let s = d.status.entry(pi.id).or_default();
-        match result {
-            Ok(stats) => {
-                s.state = State::Online;
-                s.last_seen = Some(now());
-                s.error = None;
-                s.stats = stats;
-            }
-            Err(err) => {
-                s.state = State::Offline;
-                s.error = Some(err);
-            }
+        if learned_key {
+            self.save();
         }
     }
 
@@ -387,6 +403,7 @@ impl App {
             host: f.host.trim().into(),
             port: f.port,
             user: f.user.trim().into(),
+            host_key: None,
         };
         let (password, script) = (std::mem::take(&mut f.password), f.script.clone());
         *f = Form::default();
@@ -405,12 +422,19 @@ impl App {
 
         let (shared, ctx) = (shared.clone(), ctx.clone());
         thread::spawn(move || {
+            let mut pi = pi;
             let result = ssh::setup(&pi.host, pi.port, &pi.user, &password, &shared.pubkey, &shared.key, &script);
             {
                 let mut d = shared.data.lock().unwrap();
+                if let Ok((_, fp)) = &result {
+                    pi.host_key = Some(fp.clone());
+                    if let Some(stored) = d.pis.iter_mut().find(|p| p.id == pi.id) {
+                        stored.host_key = Some(fp.clone());
+                    }
+                }
                 let s = d.status.entry(pi.id).or_default();
                 match result {
-                    Ok(log) => {
+                    Ok((log, _)) => {
                         s.state = State::Checking;
                         s.log = log;
                     }
@@ -421,6 +445,7 @@ impl App {
                     }
                 }
             }
+            shared.save();
             ctx.request_repaint();
             shared.poll(&pi);
             ctx.request_repaint();

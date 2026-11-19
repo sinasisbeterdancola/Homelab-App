@@ -2,25 +2,36 @@
 //! curve25519 / ed25519 that current Raspberry Pi OS requires).
 //! The public functions are blocking: call them from a background thread.
 
-use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
+use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{client, ChannelMsg, Disconnect};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-struct Client;
+/// Host-key checking, "trust on first use": the fingerprint seen during setup
+/// is stored with the Pi, and every later connection must present the same one.
+struct Client {
+    expected: Option<String>,
+    seen: Arc<Mutex<Option<String>>>,
+}
+
+fn fingerprint(key: &PublicKeyOrCertificate) -> String {
+    match key {
+        PublicKeyOrCertificate::PublicKey { key, .. } => key.fingerprint(HashAlg::Sha256).to_string(),
+        PublicKeyOrCertificate::Certificate(cert) => cert.public_key().fingerprint(HashAlg::Sha256).to_string(),
+    }
+}
 
 impl client::Handler for Client {
     type Error = russh::Error;
 
-    // Home network tool: accept the Pi's host key.
-    async fn check_server_key(
-        &mut self,
-        _server_public_key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
+    async fn check_server_key(&mut self, server_public_key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+        let fp = fingerprint(server_public_key);
+        let ok = self.expected.as_deref().is_none_or(|exp| exp == fp);
+        *self.seen.lock().unwrap() = Some(fp);
+        Ok(ok)
     }
 }
 
@@ -43,12 +54,32 @@ fn block_on<F: Future>(fut: F) -> F::Output {
         .block_on(fut)
 }
 
-async fn connect(host: &str, port: u16, user: &str, auth: Auth<'_>) -> Result<Session, String> {
+/// Connects and logs in. `host_key` is the fingerprint we expect (None = first
+/// contact, accept and report it). Returns the session and the Pi's fingerprint.
+async fn connect(
+    host: &str,
+    port: u16,
+    user: &str,
+    auth: Auth<'_>,
+    host_key: Option<&str>,
+) -> Result<(Session, String), String> {
     let config = Arc::new(client::Config::default());
-    let mut sess = tokio::time::timeout(Duration::from_secs(10), client::connect(config, (host, port), Client))
+    let seen = Arc::new(Mutex::new(None));
+    let handler = Client { expected: host_key.map(str::to_owned), seen: seen.clone() };
+    let result = tokio::time::timeout(Duration::from_secs(10), client::connect(config, (host, port), handler))
         .await
-        .map_err(|_| format!("timed out connecting to {host}:{port}"))?
-        .map_err(|err| format!("can't connect to {host}:{port}: {err}"))?;
+        .map_err(|_| format!("timed out connecting to {host}:{port}"))?;
+    let fp = seen.lock().unwrap().clone();
+    if let (Some(exp), Some(got)) = (host_key, fp.as_deref()) {
+        if exp != got {
+            return Err(format!(
+                "HOST KEY CHANGED — refusing to connect. Expected {exp}, got {got}. \
+                 If you reinstalled this Pi, remove it and add it again."
+            ));
+        }
+    }
+    let mut sess = result.map_err(|err| format!("can't connect to {host}:{port}: {err}"))?;
+    let fp = fp.unwrap_or_default();
 
     let res = match auth {
         Auth::Password(pw) => sess.authenticate_password(user, pw).await,
@@ -67,7 +98,7 @@ async fn connect(host: &str, port: u16, user: &str, auth: Auth<'_>) -> Result<Se
             Auth::Key(_) => "login with the homelab key was refused".into(),
         });
     }
-    Ok(sess)
+    Ok((sess, fp))
 }
 
 async fn exec(sess: &Session, cmd: &str, stdin: Option<&str>) -> Result<(u32, String), String> {
@@ -107,11 +138,11 @@ pub fn setup(
     pubkey: &str,
     key: &Path,
     script: &str,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     block_on(async {
         let mut log = String::new();
-        let sess = connect(host, port, user, Auth::Password(password)).await?;
-        log.push_str("✔ logged in with password\n");
+        let (sess, fp) = connect(host, port, user, Auth::Password(password), None).await?;
+        log.push_str(&format!("✔ logged in with password (host key {fp})\n"));
 
         let pubkey = pubkey.trim();
         let add_key = format!(
@@ -143,12 +174,12 @@ pub fn setup(
         }
         close(sess).await;
 
-        let check = connect(host, port, user, Auth::Key(key))
+        let (check, _) = connect(host, port, user, Auth::Key(key), Some(&fp))
             .await
             .map_err(|err| format!("{log}✘ key login check failed: {err}"))?;
         close(check).await;
         log.push_str("✔ key login works — password no longer needed\n");
-        Ok(log)
+        Ok((log, fp))
     })
 }
 
@@ -172,13 +203,20 @@ fn parse_kv(out: &str) -> HashMap<String, String> {
         .collect()
 }
 
-/// Logs in with the dashboard key and collects stats as key=value pairs.
-pub fn poll(host: &str, port: u16, user: &str, key: &Path) -> Result<HashMap<String, String>, String> {
+/// Logs in with the app's key and collects stats as key=value pairs.
+/// Also returns the Pi's host-key fingerprint (to store it the first time).
+pub fn poll(
+    host: &str,
+    port: u16,
+    user: &str,
+    key: &Path,
+    host_key: Option<&str>,
+) -> Result<(HashMap<String, String>, String), String> {
     block_on(async {
-        let sess = connect(host, port, user, Auth::Key(key)).await?;
+        let (sess, fp) = connect(host, port, user, Auth::Key(key), host_key).await?;
         let (_, out) = exec(&sess, STATS_SCRIPT, None).await?;
         close(sess).await;
-        Ok(parse_kv(&out))
+        Ok((parse_kv(&out), fp))
     })
 }
 
@@ -204,9 +242,15 @@ echo "top=$(top -bn2 -d 0.5 -o %CPU 2>/dev/null | awk '/^top -/{n++} n==2 && /^ 
 "#;
 
 /// Health and network checks, plus the SSH round-trip time from this PC.
-pub fn diagnostics(host: &str, port: u16, user: &str, key: &Path) -> Result<HashMap<String, String>, String> {
+pub fn diagnostics(
+    host: &str,
+    port: u16,
+    user: &str,
+    key: &Path,
+    host_key: Option<&str>,
+) -> Result<HashMap<String, String>, String> {
     block_on(async {
-        let sess = connect(host, port, user, Auth::Key(key)).await?;
+        let (sess, _) = connect(host, port, user, Auth::Key(key), host_key).await?;
         let mut total = Duration::ZERO;
         for _ in 0..3 {
             let t = Instant::now();
@@ -240,9 +284,15 @@ fn mbps(bytes: usize, d: Duration) -> String {
 
 /// LAN speed between this PC and the Pi (over SSH), then the Pi's internet speed.
 /// Keys: lan_down, lan_up (Mbit/s), inet_ping (ms), inet_down, inet_up (bytes/s), inet_error.
-pub fn speedtest(host: &str, port: u16, user: &str, key: &Path) -> Result<HashMap<String, String>, String> {
+pub fn speedtest(
+    host: &str,
+    port: u16,
+    user: &str,
+    key: &Path,
+    host_key: Option<&str>,
+) -> Result<HashMap<String, String>, String> {
     block_on(async {
-        let sess = connect(host, port, user, Auth::Key(key)).await?;
+        let (sess, _) = connect(host, port, user, Auth::Key(key), host_key).await?;
         let mut map = HashMap::new();
 
         // Pi → PC
@@ -305,7 +355,7 @@ mod tests {
     #[test]
     #[ignore]
     fn handshake_with_modern_server() {
-        let err = super::block_on(super::connect("github.com", 22, "git", super::Auth::Password("x")))
+        let err = super::block_on(super::connect("github.com", 22, "git", super::Auth::Password("x"), None))
             .err()
             .expect("login should fail");
         assert!(err.starts_with("login failed"), "handshake failed: {err}");
