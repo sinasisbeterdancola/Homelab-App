@@ -90,7 +90,7 @@ async fn connect(
         if exp != got {
             return Err(format!(
                 "HOST KEY CHANGED — refusing to connect. Expected {exp}, got {got}. \
-                 If you reinstalled this Pi, remove it and add it again."
+                 If you reinstalled this Pi, use Edit → Run setup again…"
             ));
         }
     }
