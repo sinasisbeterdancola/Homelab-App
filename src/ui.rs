@@ -65,6 +65,7 @@ pub mod icon {
     pub const ROUTER: &str = "\u{f6ff}";
     pub const PLAY: &str = "\u{f04b}";
     pub const POWER: &str = "\u{f011}";
+    pub const PEN: &str = "\u{f304}";
     pub const REBOOT: &str = "\u{f2f9}";
     pub const CLOUD_DOWN: &str = "\u{f0ed}";
 }

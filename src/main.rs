@@ -343,7 +343,22 @@ fn start(ctx: &egui::Context) -> Result<Arc<Shared>, String> {
     Ok(shared)
 }
 
+/// What the Pi dialog is doing.
+#[derive(Clone, Copy, PartialEq, Default)]
+enum FormMode {
+    /// New Pi: full setup.
+    #[default]
+    Add,
+    /// Change name / connection details of an existing Pi (no password needed).
+    Edit,
+    /// Run the setup again for an existing Pi (e.g. after it failed).
+    Setup,
+}
+
 struct Form {
+    mode: FormMode,
+    /// The existing Pi being edited / set up again.
+    target: Option<u64>,
     name: String,
     host: String,
     port: u16,
@@ -356,6 +371,8 @@ struct Form {
 impl Default for Form {
     fn default() -> Self {
         Self {
+            mode: FormMode::Add,
+            target: None,
             name: String::new(),
             host: String::new(),
             port: 22,
@@ -363,6 +380,20 @@ impl Default for Form {
             password: String::new(),
             script: DEFAULT_SCRIPT.into(),
             error: None,
+        }
+    }
+}
+
+impl Form {
+    fn for_pi(mode: FormMode, pi: &Pi) -> Self {
+        Self {
+            mode,
+            target: Some(pi.id),
+            name: pi.name.clone(),
+            host: pi.host.clone(),
+            port: pi.port,
+            user: pi.user.clone(),
+            ..Default::default()
         }
     }
 }
@@ -558,7 +589,8 @@ impl App {
             return;
         }
         let pi = Pi {
-            id: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+            // Setting up an existing Pi again keeps its id (and its place in the grid).
+            id: f.target.unwrap_or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64),
             name: if f.name.trim().is_empty() { f.host.trim().into() } else { f.name.trim().into() },
             host: f.host.trim().into(),
             port: f.port,
@@ -576,7 +608,10 @@ impl App {
                 pi.id,
                 Status { state: State::SettingUp, log: "connecting…\n".into(), ..Default::default() },
             );
-            d.pis.push(pi.clone());
+            match d.pis.iter_mut().find(|p| p.id == pi.id) {
+                Some(existing) => *existing = pi.clone(), // host key is learned again
+                None => d.pis.push(pi.clone()),
+            }
         }
         shared.save();
 
@@ -614,10 +649,71 @@ impl App {
 
     // ───────────────────────── add-Pi dialog ─────────────────────────
 
+    fn open_form(&mut self, mode: FormMode, pi: Option<&Pi>) {
+        self.form = match pi {
+            Some(pi) => Form::for_pi(mode, pi),
+            None => Form::default(),
+        };
+        self.show_form = true;
+    }
+
+    /// Saves name / connection changes. Changing host, port or user means the
+    /// host key has to be learned again on the next poll.
+    fn save_edit(&mut self, shared: &Arc<Shared>, ctx: &egui::Context) {
+        let f = &mut self.form;
+        if f.host.trim().is_empty() || f.user.trim().is_empty() {
+            f.error = Some("Host and user are required.".into());
+            return;
+        }
+        let Some(id) = f.target else { return };
+        let updated = {
+            let mut d = shared.data.lock().unwrap();
+            let Some(pi) = d.pis.iter_mut().find(|p| p.id == id) else { return };
+            let (host, user) = (f.host.trim().to_string(), f.user.trim().to_string());
+            let moved = pi.host != host || pi.port != f.port || pi.user != user;
+            pi.name = if f.name.trim().is_empty() { host.clone() } else { f.name.trim().into() };
+            pi.host = host;
+            pi.port = f.port;
+            pi.user = user;
+            if moved {
+                pi.host_key = None;
+            }
+            let pi = pi.clone();
+            if moved {
+                let s = d.status.entry(id).or_default();
+                s.state = State::Checking;
+                s.error = None;
+                d.diags.remove(&id);
+            }
+            moved.then_some(pi)
+        };
+        shared.save();
+        self.show_form = false;
+        if let Some(pi) = updated {
+            let (shared, ctx) = (shared.clone(), ctx.clone());
+            thread::spawn(move || {
+                shared.poll(&pi);
+                ctx.request_repaint();
+            });
+        }
+    }
+
     fn form_ui(&mut self, ui: &mut egui::Ui, shared: &Arc<Shared>) {
+        let mode = self.form.mode;
+        let (title, intro) = match mode {
+            FormMode::Add => (
+                "Add a Pi",
+                "The app logs in once with your password, installs its own SSH key and runs your script.",
+            ),
+            FormMode::Setup => (
+                "Set up again",
+                "Logs in with your password, installs the app's SSH key again and runs your script.",
+            ),
+            FormMode::Edit => ("Edit Pi", "Changing host, port or user makes the app learn the Pi's host key again."),
+        };
         ui.horizontal(|ui| {
             ui.label(RichText::new(icon::SERVER).size(18.0).color(ACCENT));
-            ui.label(RichText::new("Add a Pi").size(19.0).strong().color(TEXT));
+            ui.label(RichText::new(title).size(19.0).strong().color(TEXT));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui::icon_button(ui, icon::XMARK, "Close").clicked() {
                     self.show_form = false;
@@ -625,7 +721,7 @@ impl App {
             });
         });
         ui.add_space(4.0);
-        ui.label(RichText::new("The app logs in once with your password, installs its own SSH key and runs your script.").color(MUTED));
+        ui.add(egui::Label::new(RichText::new(intro).color(MUTED)).wrap());
         ui.add_space(14.0);
 
         ui::field_label(ui, icon::TAG, "Name");
@@ -643,28 +739,33 @@ impl App {
         });
         ui.add_space(10.0);
 
-        ui.columns(2, |c| {
-            ui::field_label(&mut c[0], icon::USER, "User");
-            c[0].add(ui::text_input(&mut self.form.user));
-            ui::field_label(&mut c[1], icon::LOCK, "Password");
-            c[1].add(ui::text_input(&mut self.form.password).password(true));
-        });
-        ui.add_space(10.0);
+        if mode == FormMode::Edit {
+            ui::field_label(ui, icon::USER, "User");
+            ui.add(ui::text_input(&mut self.form.user));
+        } else {
+            ui.columns(2, |c| {
+                ui::field_label(&mut c[0], icon::USER, "User");
+                c[0].add(ui::text_input(&mut self.form.user));
+                ui::field_label(&mut c[1], icon::LOCK, "Password");
+                c[1].add(ui::text_input(&mut self.form.password).password(true));
+            });
+            ui.add_space(10.0);
 
-        ui::field_label(ui, icon::TERMINAL, "Install script · runs once as root");
-        ui.add(
-            egui::TextEdit::multiline(&mut self.form.script)
-                .code_editor()
-                .desired_rows(5)
-                .desired_width(f32::INFINITY)
-                .margin(egui::vec2(10.0, 8.0)),
-        );
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new(format!("{}  Your password is only used for setup and is never saved.", icon::SHIELD))
-                .small()
-                .color(MUTED),
-        );
+            ui::field_label(ui, icon::TERMINAL, "Install script · runs once as root");
+            ui.add(
+                egui::TextEdit::multiline(&mut self.form.script)
+                    .code_editor()
+                    .desired_rows(5)
+                    .desired_width(f32::INFINITY)
+                    .margin(egui::vec2(10.0, 8.0)),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!("{}  Your password is only used for setup and is never saved.", icon::SHIELD))
+                    .small()
+                    .color(MUTED),
+            );
+        }
 
         if let Some(err) = &self.form.error {
             ui.add_space(6.0);
@@ -672,14 +773,28 @@ impl App {
         }
 
         ui.add_space(16.0);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui::primary_button(ui, &format!("{}  Connect & install", icon::BOLT)).clicked() {
+        ui.horizontal(|ui| {
+            if mode == FormMode::Edit && ui.link(RichText::new("Run setup again…").color(ACCENT)).clicked() {
+                self.form.mode = FormMode::Setup;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let ctx = ui.ctx().clone();
-                self.add_pi(shared, &ctx);
-            }
-            if ui::secondary_button(ui, "Cancel").clicked() {
-                self.show_form = false;
-            }
+                match mode {
+                    FormMode::Edit => {
+                        if ui::primary_button(ui, &format!("{}  Save", icon::LIST_CHECK)).clicked() {
+                            self.save_edit(shared, &ctx);
+                        }
+                    }
+                    FormMode::Add | FormMode::Setup => {
+                        if ui::primary_button(ui, &format!("{}  Connect & install", icon::BOLT)).clicked() {
+                            self.add_pi(shared, &ctx);
+                        }
+                    }
+                }
+                if ui::secondary_button(ui, "Cancel").clicked() {
+                    self.show_form = false;
+                }
+            });
         });
     }
 
@@ -738,7 +853,10 @@ impl App {
                         ui::notice(ui, Some(icon::PLUG), &msg, RED);
                     }
                     State::SetupFailed => {
-                        ui::notice(ui, Some(icon::WARN), "Setup failed. Check the log, remove and try again.", RED);
+                        ui::notice(ui, Some(icon::WARN), "Setup failed. Check the log below.", RED);
+                        if ui::primary_button(ui, &format!("{}  Retry setup", icon::REFRESH)).clicked() {
+                            self.open_form(FormMode::Setup, Some(pi));
+                        }
                     }
                 }
                 if let Some(err) = &s.error {
@@ -789,6 +907,9 @@ impl App {
                         } else {
                             if ui::icon_button(ui, icon::TRASH, "Remove").clicked() {
                                 self.confirm_remove = Some(pi.id);
+                            }
+                            if s.state != State::SettingUp && ui::icon_button(ui, icon::PEN, "Edit").clicked() {
+                                self.open_form(FormMode::Edit, Some(pi));
                             }
                             if s.state != State::SettingUp
                                 && s.state != State::SetupFailed
@@ -1070,7 +1191,7 @@ impl eframe::App for App {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui::primary_button(ui, &format!("{}  Add Pi", icon::PLUS)).clicked() {
-                            self.show_form = true;
+                            self.open_form(FormMode::Add, None);
                         }
                         if !pis.is_empty() && ui::icon_button(ui, icon::REFRESH, "Refresh now").clicked() {
                             let (s, c) = (shared.clone(), ctx.clone());
@@ -1132,7 +1253,7 @@ impl eframe::App for App {
                         ui.label(RichText::new("Add one with its IP, user and password. The app does the rest.").color(MUTED));
                         ui.add_space(18.0);
                         if ui::primary_button(ui, &format!("{}  Add your first Pi", icon::PLUS)).clicked() {
-                            self.show_form = true;
+                            self.open_form(FormMode::Add, None);
                         }
                     });
                     return;
