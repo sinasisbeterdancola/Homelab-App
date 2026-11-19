@@ -48,6 +48,8 @@ struct Status {
     log: String,
     /// CPU temperature (°C) of the last polls, oldest first.
     temp_history: VecDeque<f32>,
+    /// CPU load as % of all cores, same timeline.
+    load_history: VecDeque<f32>,
 }
 
 /// 10 minutes at one poll every 10 s.
@@ -265,11 +267,20 @@ impl Shared {
                     s.state = State::Online;
                     s.last_seen = Some(now());
                     s.error = None;
-                    if let Some(t) = stats.get("temp").and_then(|t| t.parse::<f32>().ok()) {
-                        s.temp_history.push_back(t / 1000.0);
-                        if s.temp_history.len() > HISTORY_LEN {
-                            s.temp_history.pop_front();
+                    let push = |h: &mut VecDeque<f32>, v: f32| {
+                        h.push_back(v);
+                        if h.len() > HISTORY_LEN {
+                            h.pop_front();
                         }
+                    };
+                    if let Some(t) = stats.get("temp").and_then(|t| t.parse::<f32>().ok()) {
+                        push(&mut s.temp_history, t / 1000.0);
+                    }
+                    // Load as % of all cores (1-minute load average).
+                    let load = stats.get("load").and_then(|l| l.split(' ').next()?.parse::<f32>().ok());
+                    let cpus = stats.get("cpus").and_then(|c| c.parse::<f32>().ok()).unwrap_or(1.0).max(1.0);
+                    if let Some(l) = load {
+                        push(&mut s.load_history, l / cpus * 100.0);
                     }
                     s.stats = stats;
                 }
@@ -487,6 +498,8 @@ struct App {
     settings: Settings,
     /// Settings being edited in the settings window (None = window closed).
     settings_draft: Option<Settings>,
+    /// Pis whose card shows the load graph instead of the temperature graph.
+    graph_load: HashSet<u64>,
 }
 
 struct Alert {
@@ -514,6 +527,7 @@ impl App {
             alerts: Vec::new(),
             settings: Settings::default(),
             settings_draft: None,
+            graph_load: HashSet::new(),
         }
     }
 
@@ -980,18 +994,33 @@ impl App {
                 match s.state {
                     State::Online => {
                         metrics(ui, &s.stats);
-                        if s.temp_history.len() >= 2 {
-                            let latest = *s.temp_history.back().unwrap() as f64;
+                        if s.temp_history.len() >= 2 || s.load_history.len() >= 2 {
                             let minutes = (HISTORY_LEN as u64 * self.settings.poll_secs).div_ceil(60);
-                            let hot = self.settings.hot_c as f64;
-                            ui::sparkline(
-                                ui,
-                                &format!("CPU temp · last {minutes} min"),
-                                &s.temp_history,
-                                HISTORY_LEN,
-                                "°C",
-                                level(latest, hot - 15.0, hot),
-                            );
+                            ui.add_space(10.0);
+                            // Temp | Load switch, remembered per Pi.
+                            let show_load = self.graph_load.contains(&pi.id);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                ui.spacing_mut().button_padding = egui::vec2(10.0, 2.0);
+                                for (load, name) in [(false, "Temp"), (true, "Load")] {
+                                    if ui::tab(ui, name, show_load == load).clicked() {
+                                        if load {
+                                            self.graph_load.insert(pi.id);
+                                        } else {
+                                            self.graph_load.remove(&pi.id);
+                                        }
+                                    }
+                                }
+                                ui.label(RichText::new(format!("· last {minutes} min")).small().color(MUTED));
+                            });
+                            if show_load {
+                                let latest = s.load_history.back().copied().unwrap_or(0.0) as f64;
+                                ui::sparkline(ui, &s.load_history, HISTORY_LEN, "%", 10.0, level(latest, 60.0, 85.0));
+                            } else {
+                                let latest = s.temp_history.back().copied().unwrap_or(0.0) as f64;
+                                let hot = self.settings.hot_c as f64;
+                                ui::sparkline(ui, &s.temp_history, HISTORY_LEN, "°C", 2.0, level(latest, hot - 15.0, hot));
+                            }
                         }
                     }
                     State::SettingUp => {

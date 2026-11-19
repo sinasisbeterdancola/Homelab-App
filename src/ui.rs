@@ -281,31 +281,47 @@ pub fn metric(ui: &mut Ui, icon: &str, label: &str, value: &str, frac: f64, colo
     }
 }
 
+/// Small pill-shaped toggle button.
+pub fn tab(ui: &mut Ui, text: &str, selected: bool) -> Response {
+    let (fill, color) = if selected { (ACCENT.gamma_multiply(0.18), ACCENT) } else { (Color32::TRANSPARENT, MUTED) };
+    ui.add(
+        Button::new(RichText::new(text).small().color(color))
+            .fill(fill)
+            .stroke(Stroke::NONE)
+            .rounding(99.0)
+            .min_size(egui::vec2(0.0, 20.0)),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Small line chart of recent values. Newest point on the right; `capacity`
 /// fixes the x-scale so the line grows in from the right as data arrives.
+/// `min_span` keeps small jitter from looking like big swings.
 pub fn sparkline(
     ui: &mut Ui,
-    label: &str,
     values: &std::collections::VecDeque<f32>,
     capacity: usize,
     unit: &str,
+    min_span: f32,
     color: Color32,
 ) {
-    let (min, max) = values.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
-    ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).small().color(MUTED));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{min:.1} – {max:.1} {unit}")).small().color(MUTED));
-        });
-    });
-
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 52.0), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, 6.0, BG);
-    let inner = rect.shrink2(egui::vec2(8.0, 6.0));
-    // At least a 2-degree window, so small jitter doesn't look like big swings.
-    let span = (max - min).max(2.0);
+    if values.is_empty() {
+        return;
+    }
+    let (min, max) = values.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    p.text(
+        rect.right_top() + egui::vec2(-8.0, 4.0),
+        egui::Align2::RIGHT_TOP,
+        format!("{min:.1} – {max:.1} {unit}"),
+        egui::FontId::proportional(10.5),
+        MUTED,
+    );
+    // Leave room at the top for the min–max label.
+    let inner = egui::Rect::from_min_max(rect.min + egui::vec2(8.0, 18.0), rect.max - egui::vec2(8.0, 6.0));
+    let span = (max - min).max(min_span);
     let lo = (min + max) / 2.0 - span / 2.0;
     let step = inner.width() / (capacity.max(2) - 1) as f32;
     let n = values.len();
