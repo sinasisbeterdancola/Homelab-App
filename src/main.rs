@@ -907,7 +907,8 @@ impl App {
 
     // ───────────────────────── Pi card ─────────────────────────
 
-    fn card(&mut self, ui: &mut egui::Ui, shared: &Arc<Shared>, pi: &Pi, s: &Status, width: f32) {
+    /// Draws one Pi card and returns its response (used as a drop target).
+    fn card(&mut self, ui: &mut egui::Ui, shared: &Arc<Shared>, pi: &Pi, s: &Status, width: f32) -> egui::Response {
         let (state_text, state_color) = match s.state {
             State::Online => ("Online", GREEN),
             State::Offline => ("Offline", RED),
@@ -928,7 +929,7 @@ impl App {
                 ui.spacing_mut().item_spacing.y = 6.0;
 
                 // Header: icon · name/host · status pill
-                ui.horizontal(|ui| {
+                let header = ui.horizontal(|ui| {
                     ui::icon_tile(ui, icon::SERVER, state_color);
                     ui.add_space(4.0);
                     ui.vertical(|ui| {
@@ -941,6 +942,15 @@ impl App {
                         ui::pill(ui, state_text, state_color, s.state == State::SettingUp || s.state == State::Checking);
                     });
                 });
+                // The header is the drag handle for reordering cards. Only the header,
+                // so the buttons further down keep receiving clicks.
+                let handle = ui
+                    .interact(header.response.rect, egui::Id::new(("drag", pi.id)), egui::Sense::drag())
+                    .on_hover_cursor(egui::CursorIcon::Grab);
+                handle.dnd_set_drag_payload(pi.id);
+                if handle.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                }
                 ui.add_space(12.0);
 
                 // Body
@@ -1057,7 +1067,8 @@ impl App {
                     });
                 });
                 });
-            });
+            })
+            .response
     }
 }
 
@@ -1459,15 +1470,38 @@ impl eframe::App for App {
                 let avail = ui.available_width();
                 let cols = ((avail + GAP) / (340.0 + GAP)).floor().max(1.0) as usize;
                 let width = (avail - GAP * (cols as f32 - 1.0)) / cols as f32;
+                // Cards can be dragged onto another card to take its place.
+                let mut moved: Option<(u64, u64)> = None; // (dragged, dropped on)
                 for row in pis.chunks(cols) {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = GAP;
                         for pi in row {
                             let s = status.get(&pi.id).cloned().unwrap_or_default();
-                            self.card(ui, &shared, pi, &s, width);
+                            let resp = self.card(ui, &shared, pi, &s, width);
+                            if resp.dnd_hover_payload::<u64>().is_some_and(|d| *d != pi.id) {
+                                ui.painter().rect_stroke(resp.rect, 14.0, Stroke::new(2.0_f32, ACCENT));
+                            }
+                            if let Some(d) = resp.dnd_release_payload::<u64>() {
+                                if *d != pi.id {
+                                    moved = Some((*d, pi.id));
+                                }
+                            }
                         }
                     });
                     ui.add_space(GAP);
+                }
+                if let Some((from, to)) = moved {
+                    {
+                        let mut d = shared.data.lock().unwrap();
+                        if let Some(i) = d.pis.iter().position(|p| p.id == from) {
+                            let p = d.pis.remove(i);
+                            let j = d.pis.iter().position(|p| p.id == to).unwrap_or(d.pis.len());
+                            // Dropping on a later card puts it after that card, on an earlier one before it.
+                            let j = if j >= i { j + 1 } else { j }.min(d.pis.len());
+                            d.pis.insert(j, p);
+                        }
+                    }
+                    shared.save();
                 }
             });
         });
