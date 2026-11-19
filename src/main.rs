@@ -15,7 +15,6 @@ use std::{
 };
 use ui::{icon, theme::*};
 
-const POLL_EVERY: Duration = Duration::from_secs(10);
 const DEFAULT_SCRIPT: &str = "export DEBIAN_FRONTEND=noninteractive\napt-get update\napt-get install -y htop curl\n";
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -193,9 +192,26 @@ fn run_diag(
     });
 }
 
+/// User settings, stored in settings.json.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+struct Settings {
+    /// Alert when a Pi's CPU reaches this temperature (°C).
+    hot_c: f32,
+    /// Seconds between status checks.
+    poll_secs: u64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { hot_c: 75.0, poll_secs: 10 }
+    }
+}
+
 /// Everything the UI and the background threads share.
 struct Shared {
     data: Mutex<Data>,
+    settings: Mutex<Settings>,
     dir: PathBuf,
     key: PathBuf,
     pubkey: String,
@@ -374,8 +390,14 @@ fn start(ctx: &egui::Context) -> Result<Arc<Shared>, String> {
         .map(|(id, c)| (id, Status { last_seen: Some(c.last_seen), stats: c.stats, ..Default::default() }))
         .collect();
 
+    let settings: Settings = std::fs::read_to_string(dir.join("settings.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
+        .unwrap_or_default();
+
     let shared = Arc::new(Shared {
         data: Mutex::new(Data { pis, status, ..Default::default() }),
+        settings: Mutex::new(settings),
         dir,
         key,
         pubkey,
@@ -385,7 +407,8 @@ fn start(ctx: &egui::Context) -> Result<Arc<Shared>, String> {
     thread::spawn(move || loop {
         poller.poll_all(&ctx);
         poller.save_cache();
-        thread::sleep(POLL_EVERY);
+        let secs = poller.settings.lock().unwrap().poll_secs.clamp(5, 300);
+        thread::sleep(Duration::from_secs(secs));
     });
     Ok(shared)
 }
@@ -460,6 +483,10 @@ struct App {
     /// Pis currently flagged as too hot (cleared once they cool down).
     hot: HashSet<u64>,
     alerts: Vec<Alert>,
+    /// Snapshot of the saved settings, refreshed every frame.
+    settings: Settings,
+    /// Settings being edited in the settings window (None = window closed).
+    settings_draft: Option<Settings>,
 }
 
 struct Alert {
@@ -469,12 +496,6 @@ struct Alert {
     at: u64,
 }
 
-/// Alert when the CPU reaches this temperature (override with the HOMELAB_HOT_C
-/// environment variable); the alert re-arms 5 °C below it.
-fn hot_threshold() -> f32 {
-    static T: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var("HOMELAB_HOT_C").ok().and_then(|v| v.parse().ok()).unwrap_or(75.0))
-}
 
 impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
@@ -491,6 +512,8 @@ impl App {
             prev_state: HashMap::new(),
             hot: HashSet::new(),
             alerts: Vec::new(),
+            settings: Settings::default(),
+            settings_draft: None,
         }
     }
 
@@ -504,7 +527,7 @@ impl App {
     }
 
     /// Turns state changes into alerts: offline, back online, too hot.
-    fn check_alerts(&mut self, ctx: &egui::Context, pis: &[Pi], status: &HashMap<u64, Status>) {
+    fn check_alerts(&mut self, ctx: &egui::Context, pis: &[Pi], status: &HashMap<u64, Status>, hot_c: f32) {
         for pi in pis {
             let Some(s) = status.get(&pi.id) else { continue };
             let prev = self.prev_state.insert(pi.id, s.state.clone());
@@ -519,9 +542,9 @@ impl App {
             }
             if s.state == State::Online {
                 if let Some(t) = s.temp_history.back().copied() {
-                    if t >= hot_threshold() && self.hot.insert(pi.id) {
+                    if t >= hot_c && self.hot.insert(pi.id) {
                         self.alert(ctx, format!("{} is running hot: {t:.1} °C", pi.name), icon::TEMP, AMBER);
-                    } else if t < hot_threshold() - 5.0 {
+                    } else if t < hot_c - 5.0 {
                         self.hot.remove(&pi.id);
                     }
                 }
@@ -959,7 +982,16 @@ impl App {
                         metrics(ui, &s.stats);
                         if s.temp_history.len() >= 2 {
                             let latest = *s.temp_history.back().unwrap() as f64;
-                            ui::sparkline(ui, "CPU temp · last 10 min", &s.temp_history, HISTORY_LEN, "°C", level(latest, 60.0, 75.0));
+                            let minutes = (HISTORY_LEN as u64 * self.settings.poll_secs).div_ceil(60);
+                            let hot = self.settings.hot_c as f64;
+                            ui::sparkline(
+                                ui,
+                                &format!("CPU temp · last {minutes} min"),
+                                &s.temp_history,
+                                HISTORY_LEN,
+                                "°C",
+                                level(latest, hot - 15.0, hot),
+                            );
                         }
                     }
                     State::SettingUp => {
@@ -1351,7 +1383,9 @@ impl eframe::App for App {
             let d = shared.data.lock().unwrap();
             (d.pis.clone(), d.status.clone())
         };
-        self.check_alerts(ctx, &pis, &status);
+        let settings = shared.settings.lock().unwrap().clone();
+        self.check_alerts(ctx, &pis, &status, settings.hot_c);
+        self.settings = settings;
 
         // ── Top bar ──
         egui::TopBottomPanel::top("top")
@@ -1380,6 +1414,9 @@ impl eframe::App for App {
                         if ui::primary_button(ui, &format!("{}  Add Pi", icon::PLUS)).clicked() {
                             self.open_form(FormMode::Add, None);
                         }
+                        if ui::icon_button(ui, icon::GEAR, "Settings").clicked() {
+                            self.settings_draft = Some(self.settings.clone());
+                        }
                         if !pis.is_empty() && ui::icon_button(ui, icon::REFRESH, "Refresh now").clicked() {
                             let (s, c) = (shared.clone(), ctx.clone());
                             thread::spawn(move || s.poll_all(&c));
@@ -1406,6 +1443,61 @@ impl eframe::App for App {
                     self.alerts.remove(i);
                 }
             });
+
+        // ── Settings dialog ──
+        if let Some(mut draft) = self.settings_draft.take() {
+            ui::dim_background(ctx);
+            let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            egui::Window::new("settings")
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .min_width(380.0)
+                .max_width(380.0)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(icon::GEAR).size(18.0).color(ACCENT));
+                        ui.label(RichText::new("Settings").size(19.0).strong().color(TEXT));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui::icon_button(ui, icon::XMARK, "Close").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.add_space(14.0);
+                    egui::Grid::new("settings_grid").num_columns(2).spacing([16.0, 12.0]).show(ui, |ui| {
+                        ui.label(RichText::new(format!("{}  Hot alert at", icon::TEMP)).color(TEXT));
+                        ui.add(egui::DragValue::new(&mut draft.hot_c).range(40.0..=95.0).speed(0.5).suffix(" °C"));
+                        ui.end_row();
+                        ui.label(RichText::new(format!("{}  Check every", icon::REFRESH)).color(TEXT));
+                        ui.add(egui::DragValue::new(&mut draft.poll_secs).range(5..=300).suffix(" s"));
+                        ui.end_row();
+                    });
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Drag the numbers or double-click to type.").small().color(MUTED));
+                    ui.add_space(16.0);
+                    // Inside `horizontal` so the right-to-left row doesn't stretch the window down.
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui::primary_button(ui, &format!("{}  Save", icon::LIST_CHECK)).clicked() {
+                                *shared.settings.lock().unwrap() = draft.clone();
+                                if let Ok(json) = serde_json::to_string_pretty(&draft) {
+                                    let _ = std::fs::write(shared.dir.join("settings.json"), json);
+                                }
+                                close = true;
+                            }
+                            if ui::secondary_button(ui, "Reset to defaults").clicked() {
+                                draft = Settings::default();
+                            }
+                        });
+                    });
+                });
+            if !close {
+                self.settings_draft = Some(draft);
+            }
+        }
 
         // ── Add dialog ──
         if self.show_form {
