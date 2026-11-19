@@ -51,7 +51,8 @@ pub mod icon {
     pub const STETHOSCOPE: &str = "\u{f0f1}";
     pub const WIFI: &str = "\u{f1eb}";
     pub const GLOBE: &str = "\u{f0ac}";
-    pub const SEARCH: &str = "\u{f002}";
+    // Not f002 (magnifying glass): egui's default font maps that code point to "fl".
+    pub const SEARCH: &str = "\u{f1c0}";
     pub const STOPWATCH: &str = "\u{f2f2}";
     pub const DOWNLOAD: &str = "\u{f019}";
     pub const UPLOAD: &str = "\u{f093}";
@@ -63,6 +64,9 @@ pub mod icon {
     pub const DESKTOP: &str = "\u{f390}";
     pub const ROUTER: &str = "\u{f6ff}";
     pub const PLAY: &str = "\u{f04b}";
+    pub const POWER: &str = "\u{f011}";
+    pub const REBOOT: &str = "\u{f2f9}";
+    pub const CLOUD_DOWN: &str = "\u{f0ed}";
 }
 
 /// Small spaced-out uppercase heading for a group of rows.
